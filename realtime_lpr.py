@@ -262,7 +262,7 @@ class RealtimeLPRSystem:
             
             # EasyOCR
             self.logger.info("📝 Inicializando EasyOCR...")
-            self.ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+            self.ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False, detector='dbnet18')
             
             # Warm-up OCR
             dummy_roi = np.zeros((50, 150, 3), dtype=np.uint8)
@@ -561,12 +561,27 @@ class RealtimeLPRSystem:
         try:
             if roi.size == 0:
                 return []
+                
+            # 🔥 OPTIMIZACIÓN 1: Reducir ROI agresivamente
+            target_height = 60   # Altura máxima para OCR
+            target_width = 180   # Ancho máximo para OCR
+        
+            if roi.shape[0] > target_height or roi.shape[1] > target_width:
+                scale_h = target_height / roi.shape[0] if roi.shape[0] > target_height else 1.0
+                scale_w = target_width / roi.shape[1] if roi.shape[1] > target_width else 1.0
+                scale = min(scale_h, scale_w)
+            
+                new_h = max(20, int(roi.shape[0] * scale))  # Mínimo 20px altura
+                new_w = max(60, int(roi.shape[1] * scale))  # Mínimo 60px ancho
+                roi = cv2.resize(roi, (new_w, new_h), interpolation=cv2.INTER_LINEAR)    
             
             # Preprocesamiento ultra-mínimo
             if len(roi.shape) == 3:
                 gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
             else:
                 gray = roi
+                
+            gray = cv2.bilateralFilter(gray, 3, 30, 30)
             
             # OCR directo sin preprocesamiento adicional
             ocr_results = self.ocr_reader.readtext(gray)

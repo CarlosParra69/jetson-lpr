@@ -3,113 +3,13 @@
         "ip": "192.168.1.101",
         "user": "admin",
         "password": "admin",
-        "rtsp_url": "rtsp://admin:admin@192.168.1.101/cam/realmonitor?channel=1&subtype=1",
-        "rtsp_urls": [
-            "rtsp://admin:admin@192.168.1.101/cam/realmonitor?channel=1&subtype=2",
-            "rtsp://admin:admin@192.168.1.101/cam/realmonitor?channel=1&subtype=1",
-            "rtsp://admin:admin@192.168.1.101/cam/realmonitor?channel=1&subtype=0",
-            "rtsp://admin:admin@192.168.1.101:554/stream1",
-            "rtsp://admin:admin@192.168.1.101:554/stream2"
-        ]
+        "rtsp_url": "rtsp://admin:admin@192.168.1.101/cam/realmonitor?channel=1&subtype=1"
     },
     "jetson": {
         "ip": "192.168.1.100",
         "interface": "enP8p1s0"
     },
     "realtime_optimization": {
-        "capture_target_fps": 20,
-        "display_target_fps": 12,
-        "ai_process_every": 3,
-        "motion_activation": true,
-        "display_scale": 0.4,
-        "minimal_rendering": true,
-        "fast_resize": true,
-        "aggressive_cache": true,
-        "instant_display": true,
-        "max_detection_age": 2.0,
-        "aggressive_ai_buffer": true,
-        "realtime_matching": true
-    },
-    "processing": {
-        "confidence_threshold": 0.25,
-        "plate_confidence_min": 0.2,
-        "max_detections": 5,
-        "ocr_cache_enabled": true,
-        "detection_cooldown_sec": 3,
-        "motion_cooldown_sec": 2,
-        "max_processing_time_sec": 2.0,
-        "ocr_timeout_sec": 1.0,
-        "simple_ocr": true,
-        "roi_min_width": 40,
-        "roi_min_height": 15,
-        "ocr_timeout_warning": 3.0,
-        "yolo_confidence_threshold": 0.2,
-        "ocr_confidence_threshold": 0.15,
-        "final_confidence_min": 0.25,
-        "roi_min_size": 20,
-        "roi_max_size": 300,
-        "roi_similarity_threshold": 0.9
-    },
-    "output": {
-        "save_results": true,
-        "save_images": false,
-        "show_video": true,
-        "show_minimal_overlay": true,
-        "window_title": "Sistema LPR PTZ - Jetson Orin Nano",
-        "show_performance_stats": true,
-        "show_ocr_stats": true,
-        "instant_overlay": true,
-        "show_timestamps": true,
-        "show_enhanced_overlay": true,
-        "show_detection_stats": true,
-        "show_fps": true,
-        "show_detailed_stats": true,
-        "show_info": true,
-        "auto_fallback_no_gui": true
-    },
-    "ultrafast_optimization": {
-        "capture_target_fps": 30,
-        "display_target_fps": 25,
-        "ai_process_every": 1,
-        "yolo_input_size": 320,
-        "display_scale": 0.2,
-        "minimal_rendering": true,
-        "fast_resize": true,
-        "aggressive_timeout": true,
-        "skip_on_delay": true,
-        "flush_buffers": true
-    },
-    "robust_optimization": {
-        "capture_target_fps": 20,
-        "display_target_fps": 15,
-        "ai_process_every": 4,
-        "display_scale": 0.3,
-        "ocr_timeout": 0.6,
-        "max_consecutive_errors": 50,
-        "frame_validation_enabled": true,
-        "auto_reconnect_enabled": true,
-        "hardware_decoder_enabled": true
-    },
-    "tesseract_optimization": {
-        "psm_mode": "8",
-        "oem_mode": "3",
-        "whitelist": "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
-        "preprocessing_enabled": true,
-        "cache_enabled": true,
-        "capture_target_fps": 15,
-        "display_target_fps": 12,
-        "ai_process_every": 4,
-        "display_scale": 0.3,
-        "ocr_timeout": 0.8
-    },
-    "anti_blocking": {
-        "enable_model_reset": true,
-        "max_detections_before_reset": 8,
-        "enable_memory_monitoring": true,
-        "enable_garbage_collection": true,
-        "reset_cooldown_sec": 5.0
-    },
-    "realtime_gpu_optimization": {
         "capture_target_fps": 25,
         "display_target_fps": 20,
         "ai_process_every": 2,
@@ -118,79 +18,34 @@
         "minimal_rendering": true,
         "fast_resize": true,
         "aggressive_cache": true,
-        "easyocr_force_gpu": true,
-        "easyocr_fallback_cpu": true,
-        "ocr_performance_monitoring": true
+        "ocr_timeout_enabled": true,
+        "ocr_timeout_seconds": 3
     },
-    "ultra_optimization": {
-        "capture_target_fps": 20,
-        "display_target_fps": 15,
-        "display_skip_frames": 1,
-        "ai_process_every": 20,
-        "display_scale": 0.4,
-        "minimal_rendering": true,
-        "fast_resize": true,
-        "thread_priority": true
-    },
-    "fixed_optimization": {
-        "capture_target_fps": 20,
-        "display_target_fps": 12,
-        "ai_every": 4,
-        "yolo_input_size": 320,
-        "yolo_confidence_for_ocr": 0.2,
-        "ocr_timeout": 12.0,
-        "display_scale": 0.3,
-        "max_detection_age": 3.0,
-        "single_thread_ai": true,
-        "aggressive_ocr_cache": true,
-        "skip_similar_rois": false
-    },
-    "balanced_fast_optimization": {
-        "capture_target_fps": 20,
-        "display_target_fps": 12,
-        "ai_every": 4,
-        "yolo_input_size": 320,
-        "yolo_confidence_for_ocr": 0.5,
-        "ocr_timeout": 1.5,
-        "display_scale": 0.3,
-        "max_detection_age": 3.0,
-        "single_thread_ai": true,
-        "aggressive_ocr_cache": true,
-        "skip_similar_rois": true
-    },
-    "lightweight_optimization": {
-        "capture_target_fps": 20,
-        "display_target_fps": 12,
-        "yolo_every": 4,
-        "ocr_skip_low_confidence": true,
-        "yolo_input_size": 320,
-        "yolo_confidence_for_ocr": 0.35,
-        "display_scale": 0.4,
-        "max_detection_age": 3.0,
-        "parallel_ai_threads": true,
-        "aggressive_caching": true
-    },
-    "balanced_optimization": {
-        "capture_target_fps": 20,
-        "display_target_fps": 12,
-        "display_skip_frames": 0,
-        "ai_process_every": 10,
-        "display_scale": 0.4,
-        "enhanced_overlay": true,
-        "fast_resize": true,
-        "detection_persistence": 5.0
-    },
-    "optimization": {
-        "target_fps": 30,
-        "ai_process_fps": 3,
-        "display_scale": 0.5,
-        "buffer_size": 1,
-        "skip_ai_frames": 15,
-        "processing_threads": true,
-        "fast_decode": true,
+    "processing": {
+        "confidence_threshold": 0.3,
+        "plate_confidence_min": 0.25,
+        "max_detections": 3,
         "ocr_cache_enabled": true,
-        "detection_cooldown_sec": 5,
-        "skip_frames": 3,
-        "visual_delay": 4
+        "detection_cooldown_sec": 0.5,
+        "motion_cooldown_sec": 2,
+        "yolo_optimizations_disabled": true
+    },
+    "output": {
+        "save_results": true,
+        "save_images": false,
+        "show_video": true,
+        "show_minimal_overlay": true,
+        "window_title": "\u26a1 LATENCIA OPTIMIZADA \u26a1 - Target <500ms"
+    },
+    "conservative_optimization": {
+        "capture_target_fps": 25,
+        "display_target_fps": 20,
+        "ai_process_every": 2,
+        "motion_activation": true,
+        "display_scale": 0.25,
+        "yolo_unchanged": true,
+        "ocr_timeout_ms": 200,
+        "ocr_cache_aggressive": true,
+        "ocr_preprocessing_fast": true
     }
 }
