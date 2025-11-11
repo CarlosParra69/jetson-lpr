@@ -18,6 +18,7 @@
         "minimal_rendering": true,
         "fast_resize": true,
         "aggressive_cache": true,
+        "headless_mode": true,
         "ocr_timeout_enabled": true,
         "ocr_timeout_seconds": 3
     },

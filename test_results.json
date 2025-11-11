@@ -1,0 +1,102 @@
+{
+  "timestamp": "2025-11-11T15:51:47.246505",
+  "duration_seconds": 6.787939786911011,
+  "summary": {
+    "total": 13,
+    "passed": 13,
+    "failed": 0
+  },
+  "results": [
+    {
+      "test": "Import OpenCV",
+      "success": true,
+      "message": "Module OpenCV available",
+      "timestamp": "2025-11-11T15:51:40.752964",
+      "details": {}
+    },
+    {
+      "test": "Import NumPy",
+      "success": true,
+      "message": "Module NumPy available",
+      "timestamp": "2025-11-11T15:51:40.753016",
+      "details": {}
+    },
+    {
+      "test": "Import Ultralytics",
+      "success": true,
+      "message": "Module Ultralytics available",
+      "timestamp": "2025-11-11T15:51:43.882327",
+      "details": {}
+    },
+    {
+      "test": "Import EasyOCR",
+      "success": true,
+      "message": "Module EasyOCR available",
+      "timestamp": "2025-11-11T15:51:47.153807",
+      "details": {}
+    },
+    {
+      "test": "Import PyTorch",
+      "success": true,
+      "message": "Module PyTorch available",
+      "timestamp": "2025-11-11T15:51:47.153824",
+      "details": {}
+    },
+    {
+      "test": "Import MySQL Connector",
+      "success": true,
+      "message": "Module MySQL Connector available",
+      "timestamp": "2025-11-11T15:51:47.222626",
+      "details": {}
+    },
+    {
+      "test": "Import psutil",
+      "success": true,
+      "message": "Module psutil available",
+      "timestamp": "2025-11-11T15:51:47.245256",
+      "details": {}
+    },
+    {
+      "test": "Import tqdm",
+      "success": true,
+      "message": "Module tqdm available",
+      "timestamp": "2025-11-11T15:51:47.245275",
+      "details": {}
+    },
+    {
+      "test": "Import colorama",
+      "success": true,
+      "message": "Module colorama available",
+      "timestamp": "2025-11-11T15:51:47.245279",
+      "details": {}
+    },
+    {
+      "test": "Imports General",
+      "success": true,
+      "message": "All modules available",
+      "timestamp": "2025-11-11T15:51:47.245283",
+      "details": {}
+    },
+    {
+      "test": "Configuration",
+      "success": true,
+      "message": "Complete valid configuration",
+      "timestamp": "2025-11-11T15:51:47.246027",
+      "details": {}
+    },
+    {
+      "test": "File Structure",
+      "success": true,
+      "message": "Main files present",
+      "timestamp": "2025-11-11T15:51:47.246462",
+      "details": {}
+    },
+    {
+      "test": "Optional Files",
+      "success": true,
+      "message": "Optional files present",
+      "timestamp": "2025-11-11T15:51:47.246469",
+      "details": {}
+    }
+  ]
+}
