@@ -42,6 +42,16 @@ except ImportError as e:
     print(f"❌ Error importando módulos: {e}")
     exit(1)
 
+# Intentar importar gestor de base de datos
+try:
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent / "stream" / "database"))
+    from db_manager import DatabaseManager
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
+    print("⚠️  Gestor de base de datos no disponible - continuando sin BD")
+
 def is_valid_license_plate(text):
     """Validar si el texto corresponde a una placa válida"""
     if not text or len(text.strip()) < 3:
@@ -106,8 +116,10 @@ class RealtimeLPRSystem:
         
         # Cache y optimizaciones tiempo real
         self.ocr_cache = {}
-        self.detection_cooldown = {}
+        self.detection_cooldown = {}  # Cooldown por texto de placa
+        self.bbox_cooldown = {}  # Cooldown por ubicación (bbox)
         self.recent_detections = []
+        self.recent_plate_variations = {}  # Para detectar variaciones incorrectas del OCR
         
         # Detección de movimiento para activar IA
         self.motion_detector = cv2.createBackgroundSubtractorMOG2(detectShadows=False)
@@ -123,6 +135,10 @@ class RealtimeLPRSystem:
         
         # Configurar red PTZ
         self.setup_network()
+        
+        # Configurar base de datos
+        self.db_manager = None
+        self.setup_database()
         
         # Directorios
         self.results_dir = Path("results")
@@ -224,11 +240,24 @@ class RealtimeLPRSystem:
             },
             "processing": {
                 "confidence_threshold": 0.30,  # Umbral más bajo para no perder detecciones
-                "plate_confidence_min": 0.25,  # OCR más permisivo
+                "plate_confidence_min": 0.40,  # OCR más estricto para evitar errores
                 "max_detections": 3,
                 "ocr_cache_enabled": True,
-                "detection_cooldown_sec": 0.5,  # COOLDOWN MUY CORTO (0.5s)
-                "motion_cooldown_sec": 2        # Cooldown para detección de movimiento
+                "detection_cooldown_sec": 3.0,  # Cooldown aumentado para evitar duplicados
+                "bbox_cooldown_sec": 2.0,       # Cooldown por ubicación
+                "motion_cooldown_sec": 2,       # Cooldown para detección de movimiento
+                "similarity_threshold": 0.7,    # Umbral para detectar variaciones similares
+                "max_plate_variations": 3       # Máximo de variaciones a considerar
+            },
+            "database": {
+                "enabled": True,
+                "type": "mysql",
+                "host": "localhost",
+                "port": 3306,
+                "database": "parqueadero_jetson",
+                "user": "lpr_user",
+                "password": "lpr_password",
+                "charset": "utf8mb4"
             },
             "output": {
                 "save_results": True,
@@ -275,6 +304,28 @@ class RealtimeLPRSystem:
             
         except Exception as e:
             self.logger.warning(f"[WARN] Configuración de red: {e}")
+    
+    def setup_database(self):
+        """Configurar conexión a base de datos"""
+        if not DB_AVAILABLE:
+            self.logger.warning("[WARN] Gestor de BD no disponible - continuando sin BD")
+            return
+        
+        if not self.config.get("database", {}).get("enabled", False):
+            self.logger.info("[INFO] Base de datos deshabilitada en configuración")
+            return
+        
+        try:
+            db_config = self.config["database"].copy()
+            db_config.pop("enabled", None)
+            
+            self.db_manager = DatabaseManager(db_config)
+            self.logger.info("[OK] Base de datos MySQL conectada")
+            
+        except Exception as e:
+            self.logger.warning(f"[WARN] No se pudo conectar a MySQL: {e}")
+            self.logger.info("[INFO] Continuando sin base de datos")
+            self.db_manager = None
     
     def setup_models(self):
         """Inicializar modelos de IA"""
@@ -351,6 +402,8 @@ class RealtimeLPRSystem:
             cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             cap.set(cv2.CAP_PROP_FPS, self.config["realtime_optimization"]["capture_target_fps"])
+            # Mejorar manejo de errores de decodificación H264
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'H264'))
             
             self.logger.info("[OK] Captura TIEMPO REAL conectada")
             
@@ -525,8 +578,69 @@ class RealtimeLPRSystem:
         
         return display_frame
     
+    def calculate_bbox_hash(self, x1, y1, x2, y2):
+        """Calcular hash de bbox para cooldown por ubicación"""
+        # Redondear a múltiplos de 20 para agrupar bboxes similares
+        x1_rounded = (x1 // 20) * 20
+        y1_rounded = (y1 // 20) * 20
+        x2_rounded = (x2 // 20) * 20
+        y2_rounded = (y2 // 20) * 20
+        return f"{x1_rounded}_{y1_rounded}_{x2_rounded}_{y2_rounded}"
+    
+    def calculate_text_similarity(self, text1, text2):
+        """Calcular similitud entre dos textos de placa"""
+        if not text1 or not text2:
+            return 0.0
+        
+        # Normalizar textos
+        t1 = re.sub(r'[^A-Z0-9]', '', text1.upper())
+        t2 = re.sub(r'[^A-Z0-9]', '', text2.upper())
+        
+        if len(t1) == 0 or len(t2) == 0:
+            return 0.0
+        
+        # Calcular similitud de caracteres
+        matches = sum(1 for a, b in zip(t1, t2) if a == b)
+        max_len = max(len(t1), len(t2))
+        
+        return matches / max_len if max_len > 0 else 0.0
+    
+    def is_similar_to_recent_detection(self, text, bbox):
+        """Verificar si la detección es similar a una reciente (evitar variaciones OCR)"""
+        similarity_threshold = self.config["processing"]["similarity_threshold"]
+        
+        # Revisar detecciones recientes (últimas 10)
+        for recent in self.recent_detections[-10:]:
+            recent_text = recent.get('plate_text', '')
+            recent_bbox = recent.get('bbox', [])
+            
+            # Verificar similitud de texto
+            similarity = self.calculate_text_similarity(text, recent_text)
+            
+            if similarity >= similarity_threshold:
+                # Verificar si el bbox está cerca (misma ubicación)
+                if recent_bbox:
+                    rx1, ry1, rx2, ry2 = recent_bbox
+                    x1, y1, x2, y2 = bbox
+                    
+                    # Calcular distancia entre centros
+                    center_x = (x1 + x2) / 2
+                    center_y = (y1 + y2) / 2
+                    r_center_x = (rx1 + rx2) / 2
+                    r_center_y = (ry1 + ry2) / 2
+                    
+                    distance = ((center_x - r_center_x) ** 2 + (center_y - r_center_y) ** 2) ** 0.5
+                    
+                    # Si está cerca y es similar, probablemente es la misma placa con OCR incorrecto
+                    if distance < 100:  # 100 píxeles de tolerancia
+                        # Preferir la detección con mayor confianza
+                        if similarity > 0.8:  # Muy similar
+                            return True, recent_text
+        
+        return False, None
+    
     def process_frame_ai_realtime(self, frame, frame_time):
-        """Procesamiento IA optimizado para tiempo real"""
+        """Procesamiento IA optimizado para tiempo real con cooldown inteligente"""
         try:
             self.ai_processed_frames += 1
             
@@ -537,6 +651,7 @@ class RealtimeLPRSystem:
             
             detections = []
             current_time = datetime.now()
+            current_time_float = time.time()
             
             for result in results:
                 boxes = result.boxes
@@ -545,6 +660,7 @@ class RealtimeLPRSystem:
                         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                         confidence = float(box.conf[0].cpu().numpy())
                         
+                        # Umbral de confianza más estricto
                         if confidence < self.config["processing"]["plate_confidence_min"]:
                             continue
                         
@@ -554,48 +670,91 @@ class RealtimeLPRSystem:
                         y2 = min(frame.shape[0], y2)
                         
                         if x2 > x1 and y2 > y1:
+                            # Cooldown por ubicación (bbox)
+                            bbox_hash = self.calculate_bbox_hash(x1, y1, x2, y2)
+                            bbox_cooldown_sec = self.config["processing"]["bbox_cooldown_sec"]
+                            
+                            if bbox_hash in self.bbox_cooldown:
+                                last_bbox_time = self.bbox_cooldown[bbox_hash]
+                                if (current_time_float - last_bbox_time) < bbox_cooldown_sec:
+                                    continue  # Esta ubicación fue detectada recientemente
+                            
                             roi = frame[y1:y2, x1:x2]
                             
-                            # OCR con cache ULTRA-agresivo
+                            # OCR con cache
                             plate_texts = self.get_plate_text_cached_realtime(roi)
                             
                             for plate_text in plate_texts:
                                 text = plate_text['text']
+                                ocr_conf = plate_text['confidence']
                                 
-                                if is_valid_license_plate(text):
-                                    # Cooldown MUY CORTO
-                                    cooldown_sec = self.config["processing"]["detection_cooldown_sec"]
-                                    if text in self.detection_cooldown:
-                                        last_time = self.detection_cooldown[text]
-                                        if (current_time - last_time).total_seconds() < cooldown_sec:
-                                            continue
-                                    
-                                    self.detection_cooldown[text] = current_time
-                                    
-                                    # Calcular latencia real
-                                    processing_latency = time.time() - frame_time
-                                    
-                                    detection = {
-                                        'timestamp': current_time.isoformat(),
-                                        'frame_number': self.capture_frame_count,
-                                        'ai_frame_number': self.ai_processed_frames,
-                                        'plate_text': text,
-                                        'yolo_confidence': confidence,
-                                        'ocr_confidence': plate_text['confidence'],
-                                        'bbox': [x1, y1, x2, y2],
-                                        'processing_latency_ms': int(processing_latency * 1000),
-                                        'valid': True
-                                    }
-                                    
-                                    detections.append(detection)
-                                    self.detections_count += 1
-                                    
-                                    self.logger.info(f"[TARGET] PLACA: {text} "
-                                                   f"(YOLO: {confidence:.2f}, OCR: {plate_text['confidence']:.2f}, "
-                                                   f"Latencia: {int(processing_latency * 1000)}ms)")
-                                    
-                                    if self.config["output"]["save_results"]:
-                                        self.save_detection(detection)
+                                # Validar formato de placa
+                                if not is_valid_license_plate(text):
+                                    continue
+                                
+                                # Verificar si es similar a una detección reciente (evitar variaciones OCR)
+                                is_similar, better_text = self.is_similar_to_recent_detection(text, [x1, y1, x2, y2])
+                                
+                                if is_similar and better_text:
+                                    # Usar el texto de mayor confianza de detecciones recientes
+                                    text = better_text
+                                    self.logger.debug(f"[DEBUG] Usando texto mejorado: {text} (era similar a {plate_text['text']})")
+                                
+                                # Cooldown por texto de placa
+                                cooldown_sec = self.config["processing"]["detection_cooldown_sec"]
+                                if text in self.detection_cooldown:
+                                    last_time = self.detection_cooldown[text]
+                                    if (current_time_float - last_time) < cooldown_sec:
+                                        continue  # Esta placa fue detectada recientemente
+                                
+                                # Actualizar cooldowns
+                                self.detection_cooldown[text] = current_time_float
+                                self.bbox_cooldown[bbox_hash] = current_time_float
+                                
+                                # Limpiar cooldowns antiguos (más de 1 minuto)
+                                self.cleanup_old_cooldowns()
+                                
+                                # Calcular latencia real
+                                processing_latency = time.time() - frame_time
+                                
+                                detection = {
+                                    'timestamp': current_time.isoformat(),
+                                    'frame_number': self.capture_frame_count,
+                                    'ai_frame_number': self.ai_processed_frames,
+                                    'plate_text': text,
+                                    'yolo_confidence': confidence,
+                                    'ocr_confidence': ocr_conf,
+                                    'bbox': [x1, y1, x2, y2],
+                                    'processing_latency_ms': int(processing_latency * 1000),
+                                    'valid': True
+                                }
+                                
+                                detections.append(detection)
+                                self.detections_count += 1
+                                
+                                self.logger.info(f"[TARGET] PLACA: {text} "
+                                               f"(YOLO: {confidence:.2f}, OCR: {ocr_conf:.2f}, "
+                                               f"Latencia: {int(processing_latency * 1000)}ms)")
+                                
+                                # Guardar en base de datos
+                                if self.db_manager:
+                                    try:
+                                        db_data = {
+                                            'timestamp': current_time,
+                                            'plate_text': text,
+                                            'confidence': confidence,
+                                            'plate_score': ocr_conf,
+                                            'vehicle_bbox': None,
+                                            'plate_bbox': json.dumps([x1, y1, x2, y2]),
+                                            'camera_location': 'entrada_principal'
+                                        }
+                                        self.db_manager.insert_detection(db_data)
+                                    except Exception as e:
+                                        self.logger.warning(f"[WARN] Error guardando en BD: {e}")
+                                
+                                # Guardar en archivo
+                                if self.config["output"]["save_results"]:
+                                    self.save_detection(detection)
             
             return detections
             
@@ -663,7 +822,8 @@ class RealtimeLPRSystem:
             
             texts = []
             for (bbox, text, confidence) in ocr_results:
-                if confidence > 0.2 and len(text.strip()) > 2:  # Umbral más bajo
+                # Umbral de confianza más estricto para evitar errores OCR
+                if confidence >= self.config["processing"]["plate_confidence_min"] and len(text.strip()) > 2:
                     cleaned_text = re.sub(r'[^A-Z0-9]', '', text.upper())
                     if len(cleaned_text) >= 3:
                         texts.append({
@@ -698,10 +858,28 @@ class RealtimeLPRSystem:
         self.start_time = time.time()
         self.logger.info("[RESET] Reset TIEMPO REAL")
     
+    def cleanup_old_cooldowns(self):
+        """Limpiar cooldowns antiguos para liberar memoria"""
+        current_time_float = time.time()
+        
+        # Limpiar cooldowns de texto (más de 1 minuto)
+        old_texts = [text for text, last_time in self.detection_cooldown.items() 
+                    if (current_time_float - last_time) > 60]
+        for text in old_texts:
+            del self.detection_cooldown[text]
+        
+        # Limpiar cooldowns de bbox (más de 1 minuto)
+        old_bboxes = [bbox_hash for bbox_hash, last_time in self.bbox_cooldown.items() 
+                     if (current_time_float - last_time) > 60]
+        for bbox_hash in old_bboxes:
+            del self.bbox_cooldown[bbox_hash]
+    
     def clear_cache(self):
         """Limpiar cache"""
         self.ocr_cache.clear()
         self.detection_cooldown.clear()
+        self.bbox_cooldown.clear()
+        self.recent_detections.clear()
         self.logger.info("[CLEAR] Cache limpiado")
     
     def save_screenshot(self, frame):
@@ -768,6 +946,13 @@ class RealtimeLPRSystem:
             if thread and thread.is_alive():
                 thread.join(timeout=2)
         
+        # Cerrar conexión de base de datos
+        if self.db_manager:
+            try:
+                self.db_manager.close()
+            except Exception as e:
+                self.logger.warning(f"[WARN] Error cerrando BD: {e}")
+        
         # Estadísticas finales
         if self.start_time:
             runtime = time.time() - self.start_time
@@ -804,10 +989,13 @@ def main():
     print("=" * 50)
     print("[TARGET] Enfoque: DETECCIÓN CASI INSTANTÁNEA")
     print("[VIDEO] IA cada 2 frames (máxima frecuencia)")
-    print("[TIME] Cooldown 0.5 segundos (ultra-corto)")
+    print("[TIME] Cooldown 3.0 segundos (mejorado para evitar duplicados)")
     print("[TARGET] Detección de movimiento opcional")
-    print("[FAST] Procesamiento ultra-agresivo")
+    print("[FAST] Procesamiento optimizado")
     print("[ROBOT] Optimizado para Jetson Orin Nano")
+    print("[DATABASE] Conexión MySQL habilitada")
+    print("[IMPROVED] Cooldown inteligente por ubicación y texto")
+    print("[IMPROVED] Validación mejorada de OCR para evitar errores")
     print("=" * 50)
     
     # Detectar automáticamente si estamos en un entorno sin GUI
