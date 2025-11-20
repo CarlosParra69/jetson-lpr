@@ -28,8 +28,32 @@
         "max_detections": 3,
         "ocr_cache_enabled": true,
         "detection_cooldown_sec": 0.5,
+        "bbox_cooldown_sec": 2.0,
         "motion_cooldown_sec": 2,
+        "similarity_threshold": 0.7,
+        "max_plate_variations": 3,
+        "max_detection_distance_m": 5.0,
+        "min_plate_width_px": 80,
+        "min_plate_height_px": 30,
+        "distance_filter_enabled": true,
         "yolo_optimizations_disabled": true
+    },
+    "database": {
+        "enabled": true,
+        "type": "mysql",
+        "host": "localhost",
+        "port": 3306,
+        "database": "parqueadero_jetson",
+        "user": "lpr_user",
+        "password": "lpr_password",
+        "charset": "utf8mb4"
+    },
+    "ptz": {
+        "enabled": true,
+        "auto_focus": true,
+        "zoom_level": 0.7,
+        "restore_after_sec": 3.0,
+        "movement_speed": 0.6
     },
     "output": {
         "save_results": true,
