@@ -27,12 +27,12 @@
 - Análisis de rendimiento
 - Reportes detallados
 
-### 4. ✅ Base de Datos Corregida
-**Archivo**: `stream/database/db_manager_fixed.py`
-- Gestión de SQLite y MySQL
+### 4. ✅ Base de Datos MySQL
+**Archivo**: `stream/database/db_manager.py`
+- Gestión MySQL únicamente
 - Compatible con Windows/Linux
 - Sin problemas de codificación
-- Datos de prueba incluidos
+- Optimizado para producción
 
 ### 5. ✅ Sistema LPR Corregido
 **Archivo**: `realtime_lpr_fixed.py`
@@ -103,8 +103,7 @@ python verify_installation.py
 
 ```
 jetson-lpr/
-├── realtime_lpr_fixed.py          # Sistema LPR corregido
-├── realtime_lpr.py                # Sistema LPR original
+├── realtime_lpr_fixed.py          # Sistema LPR principal
 ├── install_jetson_complete.sh     # Instalación completa Jetson
 ├── test_system_fixed.py           # Pruebas del sistema
 ├── manual.md                      # Manual completo
@@ -114,7 +113,7 @@ jetson-lpr/
 │   └── ptz_config.json           # Configuración principal
 ├── stream/
 │   └── database/
-│       ├── db_manager_fixed.py   # Gestor BD corregido
+│       ├── db_manager.py         # Gestor BD MySQL
 │       ├── setup_mysql_dev.py    # Setup MySQL desarrollo
 │       ├── setup_mysql_jetson.py # Setup MySQL producción
 │       └── __init__.py

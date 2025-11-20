@@ -576,23 +576,22 @@ Ejemplo de entrada:
 
 ```
 jetson-lpr/
-├── realtime_lpr_fixed.py      # Programa principal corregido
-├── realtime_lpr.py            # Programa original
+├── realtime_lpr_fixed.py      # Programa principal
 ├── install_jetson_complete.sh # Script instalación completa
 ├── jetson_lpr_start.sh        # Script inicio Jetson
-├── quick_start.sh            # Inicio rápido
-├── verify_installation.py     # Verificación del sistema
-├── test_imports.py           # Test dependencias
-├── requirements.txt          # Dependencias Python
+├── ptz_startup.sh             # Script configuración PTZ
+├── test_imports.py            # Test dependencias
+├── test_system_fixed.py       # Pruebas del sistema
+├── requirements.txt           # Dependencias Python
 ├── SOLUCIONES_LPR.md         # Documentación de soluciones
-├── manual.md                 # Este manual
+├── manual.md                  # Este manual
 ├── config/
 │   └── ptz_config.json       # Configuración principal
 ├── logs/                     # Logs del sistema
 ├── results/                  # Resultados de detecciones
 └── stream/
     ├── database/
-    │   ├── db_manager.py     # Gestor de base de datos
+    │   ├── db_manager.py     # Gestor de base de datos MySQL
     │   ├── setup_mysql_dev.py # Configuración MySQL desarrollo
     │   ├── setup_mysql_jetson.py # Configuración MySQL producción
     │   └── __init__.py

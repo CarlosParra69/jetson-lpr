@@ -259,7 +259,11 @@ class RealtimeLPRSystem:
                 "bbox_cooldown_sec": 2.0,       # Cooldown por ubicación
                 "motion_cooldown_sec": 2,       # Cooldown para detección de movimiento
                 "similarity_threshold": 0.7,    # Umbral para detectar variaciones similares
-                "max_plate_variations": 3       # Máximo de variaciones a considerar
+                "max_plate_variations": 3,      # Máximo de variaciones a considerar
+                "max_detection_distance_m": 5.0,  # Distancia máxima de detección en metros
+                "min_plate_width_px": 80,        # Ancho mínimo de placa en píxeles (calibrado para ~5m)
+                "min_plate_height_px": 30,       # Altura mínima de placa en píxeles (calibrado para ~5m)
+                "distance_filter_enabled": True  # Habilitar filtro de distancia
             },
             "database": {
                 "enabled": True,
@@ -630,6 +634,78 @@ class RealtimeLPRSystem:
         y2_rounded = (y2 // 20) * 20
         return f"{x1_rounded}_{y1_rounded}_{x2_rounded}_{y2_rounded}"
     
+    def estimate_distance_from_bbox(self, bbox, frame_width, frame_height):
+        """
+        Estimar distancia de la placa basándose en el tamaño del bbox
+        Retorna distancia estimada en metros
+        """
+        x1, y1, x2, y2 = bbox
+        plate_width = x2 - x1
+        plate_height = y2 - y1
+        
+        # Tamaño promedio de una placa real: ~52cm x 11cm
+        # Usar el ancho como referencia principal (más estable)
+        real_plate_width_cm = 52.0  # cm
+        real_plate_height_cm = 11.0  # cm
+        
+        # Calcular área de la placa en píxeles
+        plate_area_px = plate_width * plate_height
+        
+        # Calcular área del frame
+        frame_area_px = frame_width * frame_height
+        
+        # Proporción de la placa respecto al frame
+        plate_ratio = plate_area_px / frame_area_px if frame_area_px > 0 else 0
+        
+        # Estimar distancia usando modelo simplificado:
+        # Distancia inversamente proporcional al tamaño aparente
+        # Asumimos que una placa de 80px de ancho está a ~5 metros
+        # (esto se puede calibrar según la cámara)
+        
+        # Calibración: placa de 80px de ancho = 5 metros
+        reference_width_px = 80
+        reference_distance_m = 5.0
+        
+        if plate_width < 20:  # Muy pequeña, probablemente muy lejos
+            return 20.0  # Retornar distancia grande
+        
+        # Estimar distancia usando relación inversa
+        # d = d_ref * (w_ref / w_actual)
+        estimated_distance = reference_distance_m * (reference_width_px / plate_width)
+        
+        return estimated_distance
+    
+    def is_within_detection_range(self, bbox, frame_width, frame_height):
+        """
+        Verificar si la placa está dentro del rango de detección permitido
+        Retorna (bool, distancia_estimada)
+        """
+        if not self.config["processing"].get("distance_filter_enabled", True):
+            return True, 0.0
+        
+        # Verificar tamaño mínimo de placa (filtro rápido)
+        x1, y1, x2, y2 = bbox
+        plate_width = x2 - x1
+        plate_height = y2 - y1
+        
+        min_width = self.config["processing"].get("min_plate_width_px", 80)
+        min_height = self.config["processing"].get("min_plate_height_px", 30)
+        
+        # Si la placa es muy pequeña, está fuera de rango
+        if plate_width < min_width or plate_height < min_height:
+            estimated_dist = self.estimate_distance_from_bbox(bbox, frame_width, frame_height)
+            return False, estimated_dist
+        
+        # Estimar distancia
+        estimated_distance = self.estimate_distance_from_bbox(bbox, frame_width, frame_height)
+        
+        # Verificar si está dentro del rango máximo
+        max_distance = self.config["processing"].get("max_detection_distance_m", 5.0)
+        
+        is_within_range = estimated_distance <= max_distance
+        
+        return is_within_range, estimated_distance
+    
     def calculate_text_similarity(self, text1, text2):
         """Calcular similitud entre dos textos de placa"""
         if not text1 or not text2:
@@ -713,6 +789,17 @@ class RealtimeLPRSystem:
                         y2 = min(frame.shape[0], y2)
                         
                         if x2 > x1 and y2 > y1:
+                            # Filtrar por distancia/rango de detección
+                            frame_height, frame_width = frame.shape[:2]
+                            is_within_range, estimated_distance = self.is_within_detection_range(
+                                [x1, y1, x2, y2], frame_width, frame_height
+                            )
+                            
+                            if not is_within_range:
+                                self.logger.debug(f"[FILTER] Placa rechazada por distancia: {estimated_distance:.1f}m "
+                                                 f"(máximo: {self.config['processing'].get('max_detection_distance_m', 5.0)}m)")
+                                continue  # Fuera del rango permitido
+                            
                             # Cooldown por ubicación (bbox)
                             bbox_hash = self.calculate_bbox_hash(x1, y1, x2, y2)
                             bbox_cooldown_sec = self.config["processing"]["bbox_cooldown_sec"]
@@ -768,6 +855,7 @@ class RealtimeLPRSystem:
                                     'yolo_confidence': confidence,
                                     'ocr_confidence': ocr_conf,
                                     'bbox': [x1, y1, x2, y2],
+                                    'estimated_distance_m': round(estimated_distance, 2),
                                     'processing_latency_ms': int(processing_latency * 1000),
                                     'valid': True
                                 }
@@ -777,6 +865,7 @@ class RealtimeLPRSystem:
                                 
                                 self.logger.info(f"[TARGET] PLACA: {text} "
                                                f"(YOLO: {confidence:.2f}, OCR: {ocr_conf:.2f}, "
+                                               f"Distancia: {estimated_distance:.1f}m, "
                                                f"Latencia: {int(processing_latency * 1000)}ms)")
                                 
                                 # Control PTZ: Enfocar automáticamente en la placa
@@ -1065,6 +1154,7 @@ def main():
     print("[IMPROVED] Cooldown inteligente por ubicación y texto")
     print("[IMPROVED] Validación mejorada de OCR para evitar errores")
     print("[PTZ] Control automático: Scroll y zoom hacia placas detectadas")
+    print("[FILTER] Filtro de distancia: Máximo 5 metros de detección")
     print("=" * 50)
     
     # Detectar automáticamente si estamos en un entorno sin GUI

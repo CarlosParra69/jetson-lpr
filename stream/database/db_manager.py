@@ -1,43 +1,26 @@
 #!/usr/bin/env python3
 """
-💾 Gestor de Base de Datos para LPR Stream
-Soporta SQLite (desarrollo) y MySQL (producción)
+💾 Gestor de Base de Datos MySQL para LPR Stream
+Solo soporta MySQL (producción)
 """
 
-import sqlite3
 import json
-import os
 from datetime import datetime
 
 class DatabaseManager:
+    """Gestor de base de datos MySQL para sistema LPR"""
+    
     def __init__(self, config):
         self.config = config
         self.connection = None
         self.setup_database()
     
     def setup_database(self):
-        """Configurar conexión según tipo de BD"""
-        if self.config['type'] == 'sqlite':
-            self.setup_sqlite()
-        elif self.config['type'] == 'mysql':
-            self.setup_mysql()
-        else:
-            raise ValueError(f"Tipo de BD no soportado: {self.config['type']}")
-    
-    def setup_sqlite(self):
-        """Configurar SQLite para desarrollo"""
-        try:
-            db_path = self.config['database']
-            os.makedirs(os.path.dirname(db_path), exist_ok=True)
-            
-            self.connection = sqlite3.connect(db_path, check_same_thread=False)
-            self.connection.execute('PRAGMA foreign_keys = ON')
-            self.create_sqlite_tables()
-            print(f"✅ SQLite conectado: {db_path}")
-            
-        except Exception as e:
-            print(f"❌ Error SQLite: {e}")
-            raise
+        """Configurar conexión MySQL"""
+        if self.config.get('type', 'mysql') != 'mysql':
+            raise ValueError("Solo se soporta MySQL. Configuración debe tener 'type': 'mysql'")
+        
+        self.setup_mysql()
     
     def setup_mysql(self):
         """Configurar MySQL para producción"""
@@ -53,58 +36,6 @@ class DatabaseManager:
         except Exception as e:
             print(f"❌ Error MySQL: {e}")
             raise
-    
-    def create_sqlite_tables(self):
-        """Crear tablas SQLite para desarrollo"""
-        cursor = self.connection.cursor()
-        
-        # Tabla de detecciones
-        create_detections = '''
-        CREATE TABLE IF NOT EXISTS lpr_detections (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            plate_text VARCHAR(10) NOT NULL,
-            confidence REAL,
-            plate_score REAL,
-            vehicle_bbox TEXT,
-            plate_bbox TEXT,
-            camera_location VARCHAR(100) DEFAULT 'desarrollo',
-            processed BOOLEAN DEFAULT 0
-        )
-        '''
-        
-        # Tabla de vehículos registrados
-        create_vehicles = '''
-        CREATE TABLE IF NOT EXISTS registered_vehicles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            plate_number VARCHAR(10) UNIQUE NOT NULL,
-            owner_name VARCHAR(100),
-            vehicle_type VARCHAR(20) DEFAULT 'particular',
-            authorized BOOLEAN DEFAULT 1,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-        '''
-        
-        cursor.execute(create_detections)
-        cursor.execute(create_vehicles)
-        
-        # Insertar datos de prueba
-        test_vehicles = [
-            ('ABC123', 'Juan Perez', 'particular', 1),
-            ('XYZ789', 'Maria Garcia', 'particular', 1),
-            ('MOT45A', 'Carlos Lopez', 'moto', 1),
-            ('CD1234', 'Embajada Test', 'diplomatico', 1),
-            ('DEF456', 'Ana Rodriguez', 'particular', 0)
-        ]
-        
-        cursor.executemany('''
-            INSERT OR IGNORE INTO registered_vehicles 
-            (plate_number, owner_name, vehicle_type, authorized) 
-            VALUES (?, ?, ?, ?)
-        ''', test_vehicles)
-        
-        self.connection.commit()
-        print("📊 Tablas SQLite creadas con datos de prueba")
     
     def create_mysql_tables(self):
         """Crear tablas MySQL para producción"""
@@ -122,11 +53,15 @@ class DatabaseManager:
             plate_bbox TEXT,
             camera_location VARCHAR(100) DEFAULT 'entrada_principal',
             processed BOOLEAN DEFAULT FALSE,
+            entry_type ENUM('entrada', 'salida') DEFAULT 'entrada',
+            estimated_distance_m FLOAT,
             
             INDEX idx_timestamp (timestamp),
             INDEX idx_plate (plate_text),
-            INDEX idx_location (camera_location)
-        )
+            INDEX idx_location (camera_location),
+            INDEX idx_processed (processed),
+            INDEX idx_entry_type (entry_type)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         '''
         
         # Tabla de vehículos registrados
@@ -135,53 +70,81 @@ class DatabaseManager:
             id INT AUTO_INCREMENT PRIMARY KEY,
             plate_number VARCHAR(10) UNIQUE NOT NULL,
             owner_name VARCHAR(100),
-            vehicle_type ENUM('particular', 'moto', 'diplomatico') DEFAULT 'particular',
+            owner_phone VARCHAR(20),
+            vehicle_type ENUM('particular', 'moto', 'diplomatico', 'comercial') DEFAULT 'particular',
+            vehicle_brand VARCHAR(50),
+            vehicle_color VARCHAR(30),
             authorized BOOLEAN DEFAULT TRUE,
+            authorization_start DATE,
+            authorization_end DATE,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            notes TEXT,
             
-            INDEX idx_plate (plate_number)
-        )
+            INDEX idx_plate (plate_number),
+            INDEX idx_authorized (authorized),
+            INDEX idx_vehicle_type (vehicle_type),
+            INDEX idx_authorization_end (authorization_end)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        '''
+        
+        # Tabla de log de acceso
+        create_access_log = '''
+        CREATE TABLE IF NOT EXISTS access_log (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            detection_id INT,
+            plate_number VARCHAR(10) NOT NULL,
+            access_granted BOOLEAN DEFAULT FALSE,
+            access_reason VARCHAR(100),
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            camera_location VARCHAR(100),
+            
+            FOREIGN KEY (detection_id) REFERENCES lpr_detections(id) ON DELETE SET NULL,
+            INDEX idx_plate (plate_number),
+            INDEX idx_timestamp (timestamp),
+            INDEX idx_access (access_granted)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         '''
         
         cursor.execute(create_detections)
         cursor.execute(create_vehicles)
+        cursor.execute(create_access_log)
         self.connection.commit()
         print("📊 Tablas MySQL creadas")
     
     def insert_detection(self, detection_data):
-        """Insertar detección en BD"""
+        """Insertar detección en BD MySQL"""
         try:
-            if self.config['type'] == 'sqlite':
-                cursor = self.connection.cursor()
-                cursor.execute('''
-                    INSERT INTO lpr_detections 
-                    (timestamp, plate_text, confidence, plate_score, vehicle_bbox, plate_bbox, camera_location)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    detection_data['timestamp'],
-                    detection_data['plate_text'],
-                    detection_data['confidence'],
-                    detection_data['plate_score'],
-                    json.dumps(detection_data['vehicle_bbox']),
-                    json.dumps(detection_data['plate_bbox']),
-                    detection_data.get('camera_location', 'desarrollo')
-                ))
-                
-            else:  # MySQL
-                cursor = self.connection.cursor()
-                cursor.execute('''
-                    INSERT INTO lpr_detections 
-                    (timestamp, plate_text, confidence, plate_score, vehicle_bbox, plate_bbox, camera_location)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ''', (
-                    detection_data['timestamp'],
-                    detection_data['plate_text'],
-                    detection_data['confidence'],
-                    detection_data['plate_score'],
-                    json.dumps(detection_data['vehicle_bbox']),
-                    json.dumps(detection_data['plate_bbox']),
-                    detection_data.get('camera_location', 'entrada_principal')
-                ))
+            cursor = self.connection.cursor()
+            
+            # Preparar datos
+            plate_bbox_json = detection_data.get('plate_bbox')
+            if isinstance(plate_bbox_json, str):
+                plate_bbox = plate_bbox_json
+            else:
+                plate_bbox = json.dumps(plate_bbox_json) if plate_bbox_json else None
+            
+            vehicle_bbox_json = detection_data.get('vehicle_bbox')
+            if isinstance(vehicle_bbox_json, str):
+                vehicle_bbox = vehicle_bbox_json
+            else:
+                vehicle_bbox = json.dumps(vehicle_bbox_json) if vehicle_bbox_json else None
+            
+            cursor.execute('''
+                INSERT INTO lpr_detections 
+                (timestamp, plate_text, confidence, plate_score, vehicle_bbox, plate_bbox, 
+                 camera_location, estimated_distance_m)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ''', (
+                detection_data.get('timestamp'),
+                detection_data['plate_text'],
+                detection_data.get('confidence'),
+                detection_data.get('plate_score'),
+                vehicle_bbox,
+                plate_bbox,
+                detection_data.get('camera_location', 'entrada_principal'),
+                detection_data.get('estimated_distance_m')
+            ))
             
             self.connection.commit()
             return True
@@ -194,17 +157,10 @@ class DatabaseManager:
         """Verificar si vehículo está autorizado"""
         try:
             cursor = self.connection.cursor()
-            
-            if self.config['type'] == 'sqlite':
-                cursor.execute(
-                    'SELECT authorized, owner_name FROM registered_vehicles WHERE plate_number = ?',
-                    (plate_text,)
-                )
-            else:  # MySQL
-                cursor.execute(
-                    'SELECT authorized, owner_name FROM registered_vehicles WHERE plate_number = %s',
-                    (plate_text,)
-                )
+            cursor.execute(
+                'SELECT authorized, owner_name FROM registered_vehicles WHERE plate_number = %s',
+                (plate_text,)
+            )
             
             result = cursor.fetchone()
             
@@ -229,21 +185,12 @@ class DatabaseManager:
         """Obtener detecciones recientes"""
         try:
             cursor = self.connection.cursor()
-            
-            if self.config['type'] == 'sqlite':
-                cursor.execute('''
-                    SELECT plate_text, timestamp, confidence, camera_location
-                    FROM lpr_detections 
-                    WHERE datetime(timestamp) >= datetime('now', '-{} hours')
-                    ORDER BY timestamp DESC
-                '''.format(hours))
-            else:  # MySQL
-                cursor.execute('''
-                    SELECT plate_text, timestamp, confidence, camera_location
-                    FROM lpr_detections 
-                    WHERE timestamp >= DATE_SUB(NOW(), INTERVAL %s HOUR)
-                    ORDER BY timestamp DESC
-                ''', (hours,))
+            cursor.execute('''
+                SELECT plate_text, timestamp, confidence, camera_location, estimated_distance_m
+                FROM lpr_detections 
+                WHERE timestamp >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+                ORDER BY timestamp DESC
+            ''', (hours,))
             
             return cursor.fetchall()
             
