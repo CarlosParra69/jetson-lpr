@@ -130,6 +130,7 @@ class RealtimeLPRSystem:
         self.recent_plate_variations = {}  # Para detectar variaciones incorrectas del OCR
         self.display_detections = []  # Detecciones para mostrar (con expiración)
         self.pending_enhanced_detections = {}  # Detecciones pendientes de análisis mejorado
+        self.frozen_frames = {}  # Frames congelados para análisis mejorado
         self.enhanced_detection_lock = threading.Lock()  # Lock para detecciones mejoradas
         
         # Detección de movimiento para activar IA
