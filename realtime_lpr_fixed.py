@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-⚡ SISTEMA LPR ULTRA-OPTIMIZADO TIEMPO REAL - VERSIÓN CORREGIDA
+⚡ SISTEMA LPR TIEMPO REAL - VERSIÓN CORREGIDA
 ================================================================
 Versión modificada para resolución de problemas Unicode y modo headless
 
@@ -216,7 +216,7 @@ class RealtimeLPRSystem:
                 "display_target_fps": 20,      # Más FPS de display  
                 "ai_process_every": 2,         # IA CADA 2 FRAMES (ultra-frecuente)
                 "motion_activation": True,     # Activar IA solo con movimiento
-                "display_scale": 0.25,         # Display más pequeño para más FPS
+                "display_scale": 0.5,          # Display más grande (50% del tamaño original)
                 "minimal_rendering": True,     
                 "fast_resize": True,           
                 "aggressive_cache": True,      # Cache más agresivo
@@ -795,7 +795,7 @@ def main():
     parser.add_argument("--cooldown", type=float, default=0.5, help="Cooldown en segundos (por defecto: 0.5)")
     parser.add_argument("--motion", action="store_true", help="Activar detección de movimiento")
     parser.add_argument("--confidence", type=float, default=0.30, help="Umbral confianza YOLO")
-    parser.add_argument("--display-scale", type=float, default=0.25, help="Escala display")
+    parser.add_argument("--display-scale", type=float, default=0.5, help="Escala display")
     parser.add_argument("--headless", action="store_true", help="Activar modo sin GUI (recomendado para Jetson)")
     
     args = parser.parse_args()
