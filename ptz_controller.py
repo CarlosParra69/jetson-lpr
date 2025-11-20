@@ -271,16 +271,37 @@ class PTZController:
                 # Calcular movimiento necesario
                 pan_delta, tilt_delta = self.calculate_pan_tilt_from_bbox(bbox, frame_width, frame_height)
                 
-                # Mover cámara hacia la placa
+                # Movimiento más agresivo hacia la placa
                 self.logger.info(f"[PTZ] Enfocando en placa: pan_delta={pan_delta:.2f}, tilt_delta={tilt_delta:.2f}")
-                self.move_relative(pan_delta * 0.5, tilt_delta * 0.5, speed=0.6)  # Movimiento suave
                 
-                # Esperar a que la cámara se mueva
-                time.sleep(1.0)
+                # Mover en pasos para mejor precisión
+                steps = 3
+                for i in range(steps):
+                    step_pan = pan_delta * (0.7 / steps)  # 70% del movimiento total
+                    step_tilt = tilt_delta * (0.7 / steps)
+                    self.move_relative(step_pan, step_tilt, speed=0.8)  # Velocidad más alta
+                    time.sleep(0.3)  # Pequeña pausa entre pasos
                 
-                # Aplicar zoom
-                self.logger.info(f"[PTZ] Aplicando zoom: {zoom_level:.2f}")
-                self.set_zoom(zoom_level)
+                # Esperar a que la cámara se estabilice
+                time.sleep(0.5)
+                
+                # Aplicar zoom de forma incremental para mejor resultado
+                current_zoom = self.current_zoom
+                target_zoom = min(0.9, max(0.5, zoom_level))  # Limitar entre 0.5 y 0.9
+                
+                if target_zoom > current_zoom:
+                    # Zoom in incremental
+                    zoom_steps = 5
+                    zoom_increment = (target_zoom - current_zoom) / zoom_steps
+                    for i in range(zoom_steps):
+                        new_zoom = current_zoom + (zoom_increment * (i + 1))
+                        self.set_zoom(new_zoom)
+                        time.sleep(0.2)
+                else:
+                    # Zoom directo si es menor
+                    self.set_zoom(target_zoom)
+                
+                self.logger.info(f"[PTZ] Zoom aplicado: {target_zoom:.2f}")
                 
                 # Esperar tiempo de detección
                 time.sleep(restore_after)
@@ -291,6 +312,8 @@ class PTZController:
                 
             except Exception as e:
                 self.logger.error(f"[PTZ] Error en enfoque automático: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
                 # Intentar restaurar en caso de error
                 try:
                     self.restore_position()

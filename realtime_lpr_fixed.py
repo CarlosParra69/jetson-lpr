@@ -133,6 +133,11 @@ class RealtimeLPRSystem:
         self.frozen_frames = {}  # Frames congelados para análisis mejorado
         self.enhanced_detection_lock = threading.Lock()  # Lock para detecciones mejoradas
         
+        # Sistema de agrupación inteligente de detecciones
+        self.detection_groups = {}  # Agrupa detecciones similares por vehículo
+        self.group_timeout_sec = 10.0  # Tiempo para agrupar detecciones similares
+        self.group_lock = threading.Lock()  # Lock para grupos de detecciones
+        
         # Detección de movimiento para activar IA
         self.motion_detector = cv2.createBackgroundSubtractorMOG2(detectShadows=False)
         self.last_motion_time = 0
@@ -256,7 +261,7 @@ class RealtimeLPRSystem:
             },
             "processing": {
                 "confidence_threshold": 0.30,  # Umbral más bajo para no perder detecciones
-                "plate_confidence_min": 0.40,  # OCR más estricto para evitar errores
+                "plate_confidence_min": 0.60,  # OCR ultra-agresivo para evitar errores
                 "max_detections": 3,
                 "ocr_cache_enabled": True,
                 "detection_cooldown_sec": 3.0,  # Cooldown aumentado para evitar duplicados
@@ -271,7 +276,7 @@ class RealtimeLPRSystem:
                 "detection_display_timeout_sec": 3.0,  # Tiempo antes de borrar cuadros de detección
                 "enhanced_detection_enabled": True,    # Habilitar detección mejorada con zoom
                 "freeze_frame_sec": 2.0,               # Segundos para congelar frame antes de zoom
-                "enhanced_ocr_confidence_min": 0.65    # Confianza mínima OCR después de zoom mejorado
+                "enhanced_ocr_confidence_min": 0.75    # Confianza mínima OCR después de zoom mejorado (ultra-agresivo)
             },
             "database": {
                 "enabled": True,
@@ -784,6 +789,213 @@ class RealtimeLPRSystem:
         
         return False, None
     
+    def find_or_create_detection_group(self, text, bbox, timestamp_float):
+        """
+        Encontrar o crear un grupo de detecciones similares.
+        Agrupa detecciones que probablemente son del mismo vehículo.
+        """
+        with self.group_lock:
+            # Normalizar texto para comparación
+            normalized_text = re.sub(r'[^A-Z0-9]', '', text.upper())
+            
+            # Buscar grupo existente similar
+            for group_id, group_data in list(self.detection_groups.items()):
+                group_texts = group_data.get('texts', [])
+                group_bboxes = group_data.get('bboxes', [])
+                group_start_time = group_data.get('start_time', 0)
+                
+                # Verificar si el tiempo del grupo no ha expirado
+                if (timestamp_float - group_start_time) > self.group_timeout_sec:
+                    continue  # Grupo expirado, no considerar
+                
+                # Verificar similitud con textos del grupo
+                for group_text in group_texts:
+                    similarity = self.calculate_text_similarity(text, group_text)
+                    if similarity >= 0.6:  # 60% de similitud mínimo
+                        # Verificar si el bbox está cerca (mismo vehículo)
+                        for group_bbox in group_bboxes:
+                            if group_bbox:
+                                gx1, gy1, gx2, gy2 = group_bbox
+                                x1, y1, x2, y2 = bbox
+                                
+                                # Calcular distancia entre centros
+                                center_x = (x1 + x2) / 2
+                                center_y = (y1 + y2) / 2
+                                g_center_x = (gx1 + gx2) / 2
+                                g_center_y = (gy1 + gy2) / 2
+                                
+                                distance = ((center_x - g_center_x) ** 2 + (center_y - g_center_y) ** 2) ** 0.5
+                                
+                                # Si está cerca (mismo vehículo), agregar a este grupo
+                                if distance < 150:  # 150 píxeles de tolerancia
+                                    return group_id
+            
+            # No se encontró grupo similar, crear uno nuevo
+            new_group_id = f"group_{timestamp_float}_{normalized_text[:3]}"
+            self.detection_groups[new_group_id] = {
+                'start_time': timestamp_float,
+                'texts': [text],
+                'bboxes': [bbox],
+                'detections': [],
+                'last_update': timestamp_float
+            }
+            return new_group_id
+    
+    def add_detection_to_group(self, group_id, detection):
+        """Agregar detección a un grupo existente"""
+        with self.group_lock:
+            if group_id in self.detection_groups:
+                group = self.detection_groups[group_id]
+                group['detections'].append(detection)
+                group['texts'].append(detection['plate_text'])
+                group['bboxes'].append(detection['bbox'])
+                group['last_update'] = time.time()
+    
+    def select_best_detection_from_group(self, group_id):
+        """
+        Seleccionar la mejor detección de un grupo basándose en:
+        1. Confianza OCR más alta
+        2. Formato más válido (longitud correcta, ej: NON491 > NON49)
+        3. Distancia más cercana (menor distancia = mejor)
+        4. Confianza YOLO más alta
+        """
+        with self.group_lock:
+            if group_id not in self.detection_groups:
+                return None
+            
+            group = self.detection_groups[group_id]
+            detections = group.get('detections', [])
+            
+            if not detections:
+                return None
+            
+            # Función de scoring para cada detección
+            def calculate_score(det):
+                ocr_conf = det.get('ocr_confidence', 0)
+                yolo_conf = det.get('yolo_confidence', 0)
+                text = det.get('plate_text', '')
+                distance = det.get('estimated_distance_m', 999)
+                
+                # Score base: confianza OCR (peso 40%)
+                score = ocr_conf * 0.4
+                
+                # Bonus por confianza YOLO (peso 20%)
+                score += yolo_conf * 0.2
+                
+                # Bonus por formato válido (peso 20%)
+                # Preferir placas de 6 caracteres (formato estándar colombiano)
+                if len(text) == 6:
+                    score += 0.2
+                elif len(text) == 5:
+                    score += 0.1
+                elif len(text) == 7:
+                    score += 0.15
+                else:
+                    score += 0.05
+                
+                # Bonus por distancia cercana (peso 20%)
+                # Menor distancia = mejor (invertir)
+                if distance > 0:
+                    distance_score = max(0, 1.0 - (distance / 10.0))  # Normalizar a 0-1
+                    score += distance_score * 0.2
+                
+                # Penalizar textos muy cortos o muy largos
+                if len(text) < 4 or len(text) > 8:
+                    score *= 0.5
+                
+                return score
+            
+            # Calcular score para cada detección
+            scored_detections = [(det, calculate_score(det)) for det in detections]
+            
+            # Ordenar por score descendente
+            scored_detections.sort(key=lambda x: x[1], reverse=True)
+            
+            # Retornar la mejor detección
+            best_detection, best_score = scored_detections[0]
+            
+            self.logger.info(f"[GROUP] Mejor detección seleccionada: {best_detection['plate_text']} "
+                           f"(Score: {best_score:.3f}, OCR: {best_detection.get('ocr_confidence', 0):.2f}, "
+                           f"Distancia: {best_detection.get('estimated_distance_m', 0):.1f}m)")
+            
+            return best_detection
+    
+    def cleanup_expired_groups(self):
+        """Limpiar grupos de detecciones expirados y procesar los que están listos"""
+        current_time = time.time()
+        
+        with self.group_lock:
+            groups_to_process = []
+            groups_to_remove = []
+            
+            for group_id, group_data in list(self.detection_groups.items()):
+                start_time = group_data.get('start_time', 0)
+                last_update = group_data.get('last_update', 0)
+                
+                # Si el grupo no ha recibido actualizaciones en 8 segundos, procesarlo
+                if (current_time - last_update) >= 8.0:
+                    groups_to_process.append(group_id)
+                # Si el grupo es muy antiguo (más de 15 segundos), eliminarlo sin procesar
+                elif (current_time - start_time) > 15.0:
+                    groups_to_remove.append(group_id)
+            
+            # Procesar grupos listos
+            for group_id in groups_to_process:
+                best_detection = self.select_best_detection_from_group(group_id)
+                if best_detection:
+                    # Guardar la mejor detección
+                    self.finalize_best_detection(best_detection)
+                groups_to_remove.append(group_id)
+            
+            # Eliminar grupos procesados o expirados
+            for group_id in groups_to_remove:
+                if group_id in self.detection_groups:
+                    del self.detection_groups[group_id]
+    
+    def finalize_best_detection(self, detection):
+        """Finalizar y guardar la mejor detección de un grupo"""
+        try:
+            # Usar frame guardado en la detección o frame actual como fallback
+            frame = detection.get('frame')
+            if frame is None:
+                frame = self.last_frame.copy() if self.last_frame is not None else None
+            
+            if frame is None:
+                self.logger.warning("[WARN] No hay frame disponible para guardar detección")
+                return
+            
+            # Crear timestamp
+            timestamp = datetime.now()
+            
+            # Agregar a detecciones recientes
+            self.recent_detections.append(detection)
+            if len(self.recent_detections) > 20:
+                self.recent_detections = self.recent_detections[-20:]
+            
+            # Actualizar contador de detecciones
+            self.detections_count += 1
+            
+            # Sistema de detección mejorada
+            if self.config["processing"].get("enhanced_detection_enabled", True):
+                self.initiate_enhanced_detection(
+                    frame, 
+                    detection['bbox'], 
+                    detection['plate_text'], 
+                    detection['ocr_confidence'],
+                    detection['yolo_confidence'],
+                    detection.get('estimated_distance_m', 0),
+                    timestamp,
+                    time.time()
+                )
+            else:
+                # Guardar directamente
+                self.finalize_detection(detection, frame, timestamp)
+                
+        except Exception as e:
+            self.logger.error(f"[ERROR] Error finalizando mejor detección: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+    
     def process_frame_ai_realtime(self, frame, frame_time):
         """Procesamiento IA optimizado para tiempo real con cooldown inteligente"""
         try:
@@ -849,7 +1061,7 @@ class RealtimeLPRSystem:
                                     continue
                                 
                                 # Validación adicional: rechazar placas con confianza OCR muy baja (ultra-agresivo)
-                                if ocr_conf < 0.55:  # Umbral más estricto para evitar falsos positivos
+                                if ocr_conf < 0.60:  # Umbral ultra-agresivo para evitar falsos positivos
                                     self.logger.debug(f"[FILTER] Placa rechazada por baja confianza OCR: {text} ({ocr_conf:.2f})")
                                     continue
                                 
@@ -891,11 +1103,18 @@ class RealtimeLPRSystem:
                                     'bbox': [x1, y1, x2, y2],
                                     'estimated_distance_m': round(estimated_distance, 2),
                                     'processing_latency_ms': int(processing_latency * 1000),
-                                    'valid': True
+                                    'valid': True,
+                                    'frame': frame.copy()  # Guardar frame para análisis mejorado
                                 }
                                 
                                 detections.append(detection)
-                                self.detections_count += 1
+                                
+                                # SISTEMA DE AGRUPACIÓN INTELIGENTE
+                                # Agrupar detecciones similares para seleccionar la mejor
+                                group_id = self.find_or_create_detection_group(
+                                    text, [x1, y1, x2, y2], current_time_float
+                                )
+                                self.add_detection_to_group(group_id, detection)
                                 
                                 # Agregar a detecciones para mostrar (con timestamp)
                                 display_detection = detection.copy()
@@ -906,15 +1125,11 @@ class RealtimeLPRSystem:
                                 if len(self.display_detections) > 5:
                                     self.display_detections = self.display_detections[-5:]
                                 
-                                # Sistema de detección mejorada: Congelar -> Zoom -> Análisis mejorado
-                                if self.config["processing"].get("enhanced_detection_enabled", True):
-                                    self.initiate_enhanced_detection(
-                                        frame, [x1, y1, x2, y2], text, ocr_conf, confidence, 
-                                        estimated_distance, current_time, current_time_float
-                                    )
-                                else:
-                                    # Modo simple: guardar directamente
-                                    self.finalize_detection(detection, frame, current_time)
+                                self.logger.info(f"[GROUP] Detección agregada al grupo {group_id}: {text} "
+                                               f"(OCR: {ocr_conf:.2f}, Distancia: {estimated_distance:.1f}m)")
+            
+            # Limpiar grupos expirados y procesar los listos
+            self.cleanup_expired_groups()
             
             return detections
             
@@ -1032,16 +1247,18 @@ class RealtimeLPRSystem:
                         zoom_level = self.config["ptz"].get("zoom_level", 0.8)
                         
                         self.logger.info(f"[PTZ] Moviendo cámara y aplicando zoom hacia placa {initial_text}")
+                        # Usar zoom más agresivo para mejor detección
+                        aggressive_zoom = min(0.9, zoom_level + 0.1)  # Aumentar zoom ligeramente
                         self.ptz_controller.focus_on_plate(
                             bbox=bbox,
                             frame_width=frame_width,
                             frame_height=frame_height,
-                            zoom_level=zoom_level,
-                            restore_after=2.0
+                            zoom_level=aggressive_zoom,
+                            restore_after=3.0  # Más tiempo para análisis
                         )
                         
-                        # Esperar a que el zoom se aplique
-                        time.sleep(1.5)
+                        # Esperar a que el zoom se aplique completamente
+                        time.sleep(2.0)  # Más tiempo para que la cámara se estabilice
                     except Exception as e:
                         self.logger.warning(f"[WARN] Error en PTZ: {e}")
                 
@@ -1085,8 +1302,8 @@ class RealtimeLPRSystem:
                             self.logger.info(f"[ENHANCED] Placa mejorada: {initial_text} -> {final_text} "
                                            f"(OCR: {initial_ocr_conf:.2f} -> {final_conf:.2f})")
                         else:
-                            # Si el texto mejorado no es mejor, usar el inicial si cumple umbral
-                            if initial_ocr_conf >= 0.60:
+                            # Si el texto mejorado no es mejor, usar el inicial si cumple umbral ultra-agresivo
+                            if initial_ocr_conf >= 0.70:  # Umbral más alto para aceptar detección inicial
                                 final_text = initial_text
                                 final_conf = initial_ocr_conf
                                 self.logger.info(f"[ENHANCED] Manteniendo detección inicial: {final_text} "
