@@ -1564,7 +1564,6 @@ class RealtimeLPRSystem:
                             self.logger.info(f"[DB] ✅ Nueva entrada agregada al display: {plate_text} -> GUARDADA (VERDE)")
                         self.logger.info(f"[DB] ✅✅✅ VALIDACIÓN EXITOSA: Placa {plate_text} guardada correctamente en BD - CUADRO VERDE ACTIVADO")
                     else:
-                    else:
                         # Error al guardar - mantener como confirmada pero no guardada
                         detection['status'] = 'confirmed'
                         detection['saved_to_db'] = False
