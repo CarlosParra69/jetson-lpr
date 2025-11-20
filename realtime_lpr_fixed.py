@@ -642,7 +642,8 @@ class RealtimeLPRSystem:
                     # Sistema de colores según estado:
                     # - Amarillo (0, 255, 255): posible detección (en proceso)
                     # - Verde (0, 255, 0): detección final confirmada y guardada
-                    # - Rojo (0, 0, 255): detección errónea o no guardada
+                    # - Verde claro (0, 200, 0): confirmada pero no guardada (sin BD o error de guardado)
+                    # - Rojo (0, 0, 255): detección errónea (formato inválido, OCR muy bajo)
                     status = detection.get('status', 'possible')
                     saved_to_db = detection.get('saved_to_db', False)
                     
@@ -651,11 +652,11 @@ class RealtimeLPRSystem:
                         color = (0, 255, 0)
                         status_text = "✓ GUARDADA"
                     elif status == 'confirmed':
-                        # Verde claro: confirmada pero aún no guardada
+                        # Verde claro: confirmada pero aún no guardada (sin BD o error de guardado)
                         color = (0, 200, 0)
                         status_text = "CONFIRMADA"
                     elif status == 'error':
-                        # Rojo: error al guardar o detección errónea
+                        # Rojo: error de detección (formato inválido, OCR muy bajo)
                         color = (0, 0, 255)
                         status_text = "✗ ERROR"
                     else:
@@ -1086,6 +1087,7 @@ class RealtimeLPRSystem:
                                 
                                 # Validar formato de placa
                                 if not is_valid_license_plate(text):
+                                    self.logger.warning(f"[FILTER] Placa rechazada por formato inválido: {text} (OCR: {ocr_conf:.2f}, YOLO: {confidence:.2f})")
                                     # Agregar a display como error (rojo) brevemente
                                     error_detection = {
                                         'plate_text': text,
@@ -1093,7 +1095,8 @@ class RealtimeLPRSystem:
                                         'status': 'error',
                                         'saved_to_db': False,
                                         'display_time': current_time_float,
-                                        'ocr_confidence': ocr_conf
+                                        'ocr_confidence': ocr_conf,
+                                        'yolo_confidence': confidence
                                     }
                                     self.display_detections.append(error_detection)
                                     if len(self.display_detections) > 5:
@@ -1102,7 +1105,7 @@ class RealtimeLPRSystem:
                                 
                                 # Validación adicional: rechazar placas con confianza OCR muy baja (ultra-agresivo)
                                 if ocr_conf < 0.60:  # Umbral ultra-agresivo para evitar falsos positivos
-                                    self.logger.debug(f"[FILTER] Placa rechazada por baja confianza OCR: {text} ({ocr_conf:.2f})")
+                                    self.logger.warning(f"[FILTER] Placa rechazada por baja confianza OCR: {text} (OCR: {ocr_conf:.2f}, YOLO: {confidence:.2f})")
                                     # Agregar a display como error (rojo) brevemente
                                     error_detection = {
                                         'plate_text': text,
@@ -1110,7 +1113,8 @@ class RealtimeLPRSystem:
                                         'status': 'error',
                                         'saved_to_db': False,
                                         'display_time': current_time_float,
-                                        'ocr_confidence': ocr_conf
+                                        'ocr_confidence': ocr_conf,
+                                        'yolo_confidence': confidence
                                     }
                                     self.display_detections.append(error_detection)
                                     if len(self.display_detections) > 5:
@@ -1363,8 +1367,10 @@ class RealtimeLPRSystem:
                                 self.logger.info(f"[ENHANCED] Manteniendo detección inicial: {final_text} "
                                                f"(OCR: {final_conf:.2f})")
                             else:
+                                min_enhanced_conf = self.config["processing"].get("enhanced_ocr_confidence_min", 0.75)
                                 self.logger.warning(f"[ENHANCED] Rechazando placa: confianza insuficiente "
-                                                   f"(inicial: {initial_ocr_conf:.2f}, mejorada: {best_conf:.2f})")
+                                                   f"(inicial: {initial_ocr_conf:.2f}, mejorada: {best_conf:.2f}, "
+                                                   f"mínimo requerido: {min_enhanced_conf:.2f})")
                                 # Agregar a display como error (rojo) brevemente
                                 error_detection = {
                                     'plate_text': initial_text,
@@ -1372,7 +1378,8 @@ class RealtimeLPRSystem:
                                     'status': 'error',
                                     'saved_to_db': False,
                                     'display_time': time.time(),
-                                    'ocr_confidence': initial_ocr_conf
+                                    'ocr_confidence': initial_ocr_conf,
+                                    'enhanced_ocr_confidence': best_conf
                                 }
                                 self.display_detections.append(error_detection)
                                 if len(self.display_detections) > 5:
@@ -1535,24 +1542,30 @@ class RealtimeLPRSystem:
                                 disp_det['status'] = 'saved'
                         self.logger.info(f"[DB] ✅ Placa {detection['plate_text']} guardada correctamente en BD")
                     else:
-                        detection['status'] = 'error'
+                        # Error al guardar - mantener como confirmada pero no guardada
+                        detection['status'] = 'confirmed'
                         detection['saved_to_db'] = False
                         # Actualizar también en display_detections
                         for disp_det in self.display_detections:
                             if disp_det.get('plate_text') == detection['plate_text'] and \
                                abs(disp_det.get('display_time', 0) - display_detection['display_time']) < 1.0:
                                 disp_det['saved_to_db'] = False
-                                disp_det['status'] = 'error'
-                        self.logger.warning(f"[DB] ❌ Error guardando placa {detection['plate_text']} en BD")
+                                disp_det['status'] = 'confirmed'
+                        self.logger.error(f"[DB] ❌ ERROR: No se pudo guardar placa {detection['plate_text']} en BD - insert_detection retornó False")
+                        self.logger.error(f"[DB] Detalles: YOLO={detection['yolo_confidence']:.2f}, OCR={detection['ocr_confidence']:.2f}, Distancia={detection.get('estimated_distance_m', 0):.1f}m")
                 except Exception as e:
-                    detection['status'] = 'error'
+                    # Error de excepción - mantener como confirmada pero loguear el error
+                    detection['status'] = 'confirmed'
                     detection['saved_to_db'] = False
-                    self.logger.warning(f"[WARN] Error guardando en BD: {e}")
+                    self.logger.error(f"[DB] ❌ EXCEPCIÓN al guardar placa {detection['plate_text']} en BD: {e}")
+                    self.logger.error(f"[DB] Tipo de error: {type(e).__name__}")
+                    import traceback
+                    self.logger.error(f"[DB] Traceback: {traceback.format_exc()}")
             else:
-                # Sin BD disponible, marcar como error
-                detection['status'] = 'error'
+                # Sin BD disponible - mantener como confirmada (no es un error, solo no hay BD)
+                detection['status'] = 'confirmed'
                 detection['saved_to_db'] = False
-                self.logger.warning(f"[WARN] BD no disponible - no se guardó placa {detection['plate_text']}")
+                self.logger.info(f"[DB] ℹ️ BD no disponible - placa {detection['plate_text']} confirmada pero no guardada")
             
             # Guardar en archivo
             if self.config["output"]["save_results"]:
