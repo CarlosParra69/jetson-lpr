@@ -135,7 +135,7 @@ class RealtimeLPRSystem:
         
         # Sistema de agrupación inteligente de detecciones
         self.detection_groups = {}  # Agrupa detecciones similares por vehículo
-        self.group_timeout_sec = 2.0  # Tiempo para agrupar detecciones similares (reducido de 10s para reconocimiento más rápido)
+        self.group_timeout_sec = 1.0  # Tiempo para agrupar detecciones similares (reducido para reconocimiento más rápido)
         self.group_lock = threading.Lock()  # Lock para grupos de detecciones
         
         # Detección de movimiento para activar IA
@@ -261,7 +261,7 @@ class RealtimeLPRSystem:
             },
             "processing": {
                 "confidence_threshold": 0.30,  # Umbral más bajo para no perder detecciones
-                "plate_confidence_min": 0.60,  # OCR ultra-agresivo para evitar errores
+                "plate_confidence_min": 0.30,  # OCR reducido para aceptar más placas válidas (antes 0.60)
                 "max_detections": 3,
                 "ocr_cache_enabled": True,
                 "detection_cooldown_sec": 3.0,  # Cooldown aumentado para evitar duplicados
@@ -961,11 +961,11 @@ class RealtimeLPRSystem:
                 start_time = group_data.get('start_time', 0)
                 last_update = group_data.get('last_update', 0)
                 
-                # Si el grupo no ha recibido actualizaciones en 2 segundos, procesarlo (reducido de 8s para reconocimiento más rápido)
-                if (current_time - last_update) >= 2.0:
+                # Si el grupo no ha recibido actualizaciones en 1 segundo, procesarlo (reducido para reconocimiento más rápido)
+                if (current_time - last_update) >= 1.0:
                     groups_to_process.append(group_id)
-                # Si el grupo es muy antiguo (más de 5 segundos), eliminarlo sin procesar
-                elif (current_time - start_time) > 5.0:
+                # Si el grupo es muy antiguo (más de 3 segundos), eliminarlo sin procesar
+                elif (current_time - start_time) > 3.0:
                     groups_to_remove.append(group_id)
             
             # Procesar grupos listos
@@ -974,10 +974,17 @@ class RealtimeLPRSystem:
                 best_detection = self.select_best_detection_from_group(group_id)
                 if best_detection:
                     # Guardar la mejor detección
-                    self.logger.info(f"[GROUP] Finalizando mejor detección del grupo: {best_detection['plate_text']}")
-                    self.finalize_best_detection(best_detection)
+                    plate_text = best_detection.get('plate_text', 'UNKNOWN')
+                    self.logger.info(f"[GROUP] ✅ Mejor detección seleccionada: {plate_text} - Finalizando...")
+                    try:
+                        self.finalize_best_detection(best_detection)
+                        self.logger.info(f"[GROUP] ✅ Detección {plate_text} finalizada correctamente")
+                    except Exception as e:
+                        self.logger.error(f"[GROUP] ❌ Error finalizando detección {plate_text}: {e}")
+                        import traceback
+                        self.logger.error(traceback.format_exc())
                 else:
-                    self.logger.warning(f"[GROUP] No se pudo seleccionar mejor detección del grupo {group_id}")
+                    self.logger.warning(f"[GROUP] ⚠️ No se pudo seleccionar mejor detección del grupo {group_id}")
                 groups_to_remove.append(group_id)
             
             # Eliminar grupos procesados o expirados
@@ -1092,9 +1099,10 @@ class RealtimeLPRSystem:
                                         self.display_detections = self.display_detections[-5:]
                                     continue
                                 
-                                # Validación adicional: rechazar placas con confianza OCR muy baja (ultra-agresivo)
-                                if ocr_conf < 0.60:  # Umbral ultra-agresivo para evitar falsos positivos
-                                    self.logger.warning(f"[FILTER] Placa rechazada por baja confianza OCR: {text} (OCR: {ocr_conf:.2f}, YOLO: {confidence:.2f})")
+                                # Validación adicional: rechazar placas con confianza OCR muy baja
+                                ocr_min_threshold = self.config["processing"]["plate_confidence_min"]
+                                if ocr_conf < ocr_min_threshold:
+                                    self.logger.warning(f"[FILTER] Placa rechazada por baja confianza OCR: {text} (OCR: {ocr_conf:.2f}, YOLO: {confidence:.2f}, mínimo: {ocr_min_threshold:.2f})")
                                     # Agregar a display como error (rojo) brevemente
                                     error_detection = {
                                         'plate_text': text,
@@ -1505,7 +1513,8 @@ class RealtimeLPRSystem:
             
             # Log final
             self.detections_count += 1
-            self.logger.info(f"[TARGET] PLACA FINAL: {detection['plate_text']} "
+            plate_text = detection['plate_text']
+            self.logger.info(f"[TARGET] ✅ PLACA FINAL CONFIRMADA: {plate_text} "
                            f"(YOLO: {detection['yolo_confidence']:.2f}, "
                            f"OCR: {detection['ocr_confidence']:.2f}, "
                            f"Distancia: {detection['estimated_distance_m']:.1f}m)")
@@ -1523,7 +1532,7 @@ class RealtimeLPRSystem:
                         'camera_location': 'entrada_principal',
                         'estimated_distance_m': detection.get('estimated_distance_m')
                     }
-                    self.logger.info(f"[DB] Intentando guardar placa {detection['plate_text']} en BD...")
+                    self.logger.info(f"[DB] Intentando guardar placa {plate_text} en BD...")
                     saved = self.db_manager.insert_detection(db_data)
                     
                     if saved:
@@ -1533,18 +1542,28 @@ class RealtimeLPRSystem:
                         current_time_now = time.time()
                         updated_count = 0
                         for disp_det in self.display_detections:
-                            if disp_det.get('plate_text') == detection['plate_text']:
-                                # Actualizar si es la misma placa y está dentro de 10 segundos
+                            if disp_det.get('plate_text') == plate_text:
+                                # Actualizar si es la misma placa y está dentro de 15 segundos
                                 time_diff = abs(disp_det.get('display_time', 0) - current_time_now)
-                                if time_diff < 10.0:
+                                if time_diff < 15.0:
                                     disp_det['saved_to_db'] = True
                                     disp_det['status'] = 'saved'
                                     updated_count += 1
+                                    self.logger.debug(f"[DB] Display actualizado: {plate_text} -> status=saved, saved_to_db=True")
                         if updated_count > 0:
-                            self.logger.info(f"[DB] ✅ Estado actualizado en {updated_count} detección(es) del display: {detection['plate_text']} -> GUARDADA (VERDE)")
+                            self.logger.info(f"[DB] ✅ Estado actualizado en {updated_count} detección(es) del display: {plate_text} -> GUARDADA (VERDE)")
                         else:
-                            self.logger.warning(f"[DB] ⚠️ No se encontraron detecciones en display para actualizar: {detection['plate_text']}")
-                        self.logger.info(f"[DB] ✅ Placa {detection['plate_text']} guardada correctamente en BD - CUADRO VERDE ACTIVADO")
+                            # Si no se encontró en display, agregar una nueva entrada
+                            new_display_det = detection.copy()
+                            new_display_det['display_time'] = current_time_now
+                            new_display_det['status'] = 'saved'
+                            new_display_det['saved_to_db'] = True
+                            self.display_detections.append(new_display_det)
+                            if len(self.display_detections) > 5:
+                                self.display_detections = self.display_detections[-5:]
+                            self.logger.info(f"[DB] ✅ Nueva entrada agregada al display: {plate_text} -> GUARDADA (VERDE)")
+                        self.logger.info(f"[DB] ✅✅✅ VALIDACIÓN EXITOSA: Placa {plate_text} guardada correctamente en BD - CUADRO VERDE ACTIVADO")
+                    else:
                     else:
                         # Error al guardar - mantener como confirmada pero no guardada
                         detection['status'] = 'confirmed'
@@ -1552,13 +1571,14 @@ class RealtimeLPRSystem:
                         # Actualizar también en display_detections
                         current_time_now = time.time()
                         for disp_det in self.display_detections:
-                            if disp_det.get('plate_text') == detection['plate_text']:
+                            if disp_det.get('plate_text') == plate_text:
                                 time_diff = abs(disp_det.get('display_time', 0) - current_time_now)
-                                if time_diff < 5.0:
+                                if time_diff < 15.0:
                                     disp_det['saved_to_db'] = False
                                     disp_det['status'] = 'confirmed'
-                        self.logger.error(f"[DB] ❌ ERROR: No se pudo guardar placa {detection['plate_text']} en BD - insert_detection retornó False")
+                        self.logger.error(f"[DB] ❌❌❌ ERROR DE VALIDACIÓN: No se pudo guardar placa {plate_text} en BD - insert_detection retornó False")
                         self.logger.error(f"[DB] Detalles: YOLO={detection['yolo_confidence']:.2f}, OCR={detection['ocr_confidence']:.2f}, Distancia={detection.get('estimated_distance_m', 0):.1f}m")
+                        self.logger.error(f"[DB] La placa {plate_text} NO se guardó en la base de datos - CUADRO VERDE NO ACTIVADO")
                 except Exception as e:
                     # Error de excepción - mantener como confirmada pero loguear el error
                     detection['status'] = 'confirmed'
