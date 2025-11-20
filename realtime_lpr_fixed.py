@@ -126,8 +126,9 @@ class RealtimeLPRSystem:
         self.ocr_cache = {}
         self.detection_cooldown = {}  # Cooldown por texto de placa
         self.bbox_cooldown = {}  # Cooldown por ubicación (bbox)
-        self.recent_detections = []
+        self.recent_detections = []  # Detecciones recientes con timestamp
         self.recent_plate_variations = {}  # Para detectar variaciones incorrectas del OCR
+        self.display_detections = []  # Detecciones para mostrar (con expiración)
         
         # Detección de movimiento para activar IA
         self.motion_detector = cv2.createBackgroundSubtractorMOG2(detectShadows=False)
@@ -260,10 +261,11 @@ class RealtimeLPRSystem:
                 "motion_cooldown_sec": 2,       # Cooldown para detección de movimiento
                 "similarity_threshold": 0.7,    # Umbral para detectar variaciones similares
                 "max_plate_variations": 3,      # Máximo de variaciones a considerar
-                "max_detection_distance_m": 5.0,  # Distancia máxima de detección en metros
-                "min_plate_width_px": 80,        # Ancho mínimo de placa en píxeles (calibrado para ~5m)
-                "min_plate_height_px": 30,       # Altura mínima de placa en píxeles (calibrado para ~5m)
-                "distance_filter_enabled": True  # Habilitar filtro de distancia
+                "max_detection_distance_m": 8.0,  # Distancia máxima de detección en metros (aumentada)
+                "min_plate_width_px": 60,        # Ancho mínimo de placa en píxeles (reducido para más alcance)
+                "min_plate_height_px": 25,       # Altura mínima de placa en píxeles (reducido para más alcance)
+                "distance_filter_enabled": True,  # Habilitar filtro de distancia
+                "detection_display_timeout_sec": 3.0  # Tiempo antes de borrar cuadros de detección
             },
             "database": {
                 "enabled": True,
@@ -609,13 +611,31 @@ class RealtimeLPRSystem:
                 cv2.putText(display_frame, "TIEMPO REAL", (5, new_h - 10), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
                 
-                # Detecciones recientes con timestamp
-                for i, detection in enumerate(self.recent_detections[-2:]):
+                # Limpiar detecciones expiradas (3 segundos)
+                current_time_float = time.time()
+                timeout_sec = self.config["processing"].get("detection_display_timeout_sec", 3.0)
+                self.display_detections = [
+                    d for d in self.display_detections 
+                    if (current_time_float - d.get('display_time', 0)) < timeout_sec
+                ]
+                
+                # Mostrar solo detecciones no expiradas
+                for i, detection in enumerate(self.display_detections):
                     bbox = detection['bbox']
                     x1, y1, x2, y2 = [int(coord * scale) for coord in bbox]
                     
-                    # Rectángulo
-                    color = (0, 255, 0) if i == len(self.recent_detections) - 1 else (0, 255, 255)
+                    # Calcular tiempo restante para desvanecer
+                    elapsed = current_time_float - detection.get('display_time', 0)
+                    time_remaining = timeout_sec - elapsed
+                    
+                    # Color verde para la más reciente, amarillo para otras
+                    if i == len(self.display_detections) - 1:
+                        color = (0, 255, 0)  # Verde
+                    else:
+                        # Desvanecer a amarillo según tiempo
+                        alpha = max(0.3, time_remaining / timeout_sec)
+                        color = (0, int(255 * alpha), 255)  # Amarillo que se desvanece
+                    
                     cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
                     
                     # Texto de la placa
@@ -822,13 +842,21 @@ class RealtimeLPRSystem:
                                 if not is_valid_license_plate(text):
                                     continue
                                 
+                                # Validación adicional: rechazar placas con confianza OCR muy baja
+                                if ocr_conf < 0.50:  # Aumentar umbral mínimo de OCR
+                                    self.logger.debug(f"[FILTER] Placa rechazada por baja confianza OCR: {text} ({ocr_conf:.2f})")
+                                    continue
+                                
                                 # Verificar si es similar a una detección reciente (evitar variaciones OCR)
                                 is_similar, better_text = self.is_similar_to_recent_detection(text, [x1, y1, x2, y2])
                                 
                                 if is_similar and better_text:
-                                    # Usar el texto de mayor confianza de detecciones recientes
-                                    text = better_text
-                                    self.logger.debug(f"[DEBUG] Usando texto mejorado: {text} (era similar a {plate_text['text']})")
+                                    # Si hay una detección similar reciente con mayor confianza, usar esa
+                                    # Pero solo si la diferencia de confianza es significativa
+                                    recent_det = next((d for d in self.recent_detections if d.get('plate_text') == better_text), None)
+                                    if recent_det and recent_det.get('ocr_confidence', 0) > ocr_conf + 0.15:
+                                        self.logger.debug(f"[FILTER] Usando detección previa más confiable: {better_text}")
+                                        continue  # Ignorar esta detección, usar la anterior
                                 
                                 # Cooldown por texto de placa
                                 cooldown_sec = self.config["processing"]["detection_cooldown_sec"]
@@ -862,6 +890,15 @@ class RealtimeLPRSystem:
                                 
                                 detections.append(detection)
                                 self.detections_count += 1
+                                
+                                # Agregar a detecciones para mostrar (con timestamp)
+                                display_detection = detection.copy()
+                                display_detection['display_time'] = current_time_float
+                                self.display_detections.append(display_detection)
+                                
+                                # Mantener solo últimas 5 detecciones para display
+                                if len(self.display_detections) > 5:
+                                    self.display_detections = self.display_detections[-5:]
                                 
                                 self.logger.info(f"[TARGET] PLACA: {text} "
                                                f"(YOLO: {confidence:.2f}, OCR: {ocr_conf:.2f}, "
@@ -1030,6 +1067,7 @@ class RealtimeLPRSystem:
         self.detection_cooldown.clear()
         self.bbox_cooldown.clear()
         self.recent_detections.clear()
+        self.display_detections.clear()
         self.logger.info("[CLEAR] Cache limpiado")
     
     def save_screenshot(self, frame):
