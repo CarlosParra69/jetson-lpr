@@ -42,12 +42,22 @@ class PTZController:
     def test_connection(self):
         """Verificar conexión con la cámara"""
         try:
-            # Intentar obtener snapshot o información básica
-            test_url = f"{self.base_url}/cgi-bin/snapshot.cgi"
-            response = requests.get(test_url, auth=(self.username, self.password), timeout=2)
-            if response.status_code == 200:
-                self.logger.info(f"[PTZ] Conexión exitosa con cámara {self.camera_ip}")
-                return True
+            # Intentar múltiples URLs para verificar conexión
+            test_urls = [
+                f"{self.base_url}/cgi-bin/snapshot.cgi",
+                f"{self.base_url}/ISAPI/Streaming/channels/1/picture",
+                f"{self.base_url}/cgi-bin/currentpic.cgi",
+            ]
+            
+            for test_url in test_urls:
+                try:
+                    response = requests.get(test_url, auth=(self.username, self.password), timeout=2)
+                    if response.status_code == 200:
+                        self.logger.info(f"[PTZ] Conexión exitosa con cámara {self.camera_ip}")
+                        return True
+                except:
+                    continue
+                    
         except Exception as e:
             self.logger.warning(f"[PTZ] No se pudo verificar conexión: {e}")
             self.logger.info("[PTZ] Continuando con control PTZ (puede fallar si la cámara no soporta)")
@@ -147,17 +157,33 @@ class PTZController:
             try:
                 zoom_value = int(zoom_level * 100)
                 
-                params = {
-                    'action': 'start',
-                    'code': 'Zoom',
-                    'arg1': zoom_value
-                }
+                # Intentar múltiples formatos de comando zoom
+                params_list = [
+                    {'action': 'start', 'code': 'Zoom', 'arg1': zoom_value},
+                    {'action': 'start', 'code': 'ZoomIn', 'arg1': zoom_value},
+                    {'action': 'start', 'code': 'ZoomTele', 'arg1': zoom_value},
+                ]
                 
-                result = self.send_ptz_command('ptz', params)
+                result = False
+                for params in params_list:
+                    result = self.send_ptz_command('ptz', params)
+                    if result:
+                        break
+                
+                # Si falla, intentar zoom incremental
+                if not result and zoom_level > self.current_zoom:
+                    steps = int((zoom_level - self.current_zoom) * 20)
+                    for _ in range(steps):
+                        params = {'action': 'start', 'code': 'ZoomIn', 'arg1': 5, 'arg2': 0, 'arg3': 0}
+                        if self.send_ptz_command('ptz', params):
+                            result = True
+                            time.sleep(0.1)
                 
                 if result:
                     self.current_zoom = zoom_level
                     self.logger.info(f"[PTZ] Zoom establecido a: {zoom_level:.2f}")
+                else:
+                    self.logger.warning(f"[PTZ] No se pudo establecer zoom, continuando sin zoom")
                 
                 return result
                 
