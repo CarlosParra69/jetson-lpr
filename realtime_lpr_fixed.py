@@ -665,17 +665,17 @@ class RealtimeLPRSystem:
                         color = (0, int(255 * alpha), 255)  # Amarillo
                         status_text = "PROCESANDO"
                     
-                    # Dibujar rectángulo con color según estado
-                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 3)
+                    # Dibujar rectángulo con color según estado (línea delgada)
+                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 1)
                     
                     # Texto de la placa
                     plate_text = detection['plate_text']
                     cv2.putText(display_frame, plate_text, (x1, y1-10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                     
                     # Mostrar estado debajo de la placa
                     cv2.putText(display_frame, status_text, (x1, y2+20), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
         
         return display_frame
     
@@ -970,10 +970,14 @@ class RealtimeLPRSystem:
             
             # Procesar grupos listos
             for group_id in groups_to_process:
+                self.logger.info(f"[GROUP] Procesando grupo {group_id} - seleccionando mejor detección...")
                 best_detection = self.select_best_detection_from_group(group_id)
                 if best_detection:
                     # Guardar la mejor detección
+                    self.logger.info(f"[GROUP] Finalizando mejor detección del grupo: {best_detection['plate_text']}")
                     self.finalize_best_detection(best_detection)
+                else:
+                    self.logger.warning(f"[GROUP] No se pudo seleccionar mejor detección del grupo {group_id}")
                 groups_to_remove.append(group_id)
             
             # Eliminar grupos procesados o expirados
@@ -996,29 +1000,14 @@ class RealtimeLPRSystem:
             # Crear timestamp
             timestamp = datetime.now()
             
-            # Agregar a detecciones recientes
-            self.recent_detections.append(detection)
-            if len(self.recent_detections) > 20:
-                self.recent_detections = self.recent_detections[-20:]
+            # Log de inicio de finalización
+            self.logger.info(f"[FINALIZE] Finalizando mejor detección: {detection['plate_text']} "
+                           f"(OCR: {detection.get('ocr_confidence', 0):.2f}, "
+                           f"YOLO: {detection.get('yolo_confidence', 0):.2f})")
             
-            # Actualizar contador de detecciones
-            self.detections_count += 1
-            
-            # Sistema de detección mejorada
-            if self.config["processing"].get("enhanced_detection_enabled", True):
-                self.initiate_enhanced_detection(
-                    frame, 
-                    detection['bbox'], 
-                    detection['plate_text'], 
-                    detection['ocr_confidence'],
-                    detection['yolo_confidence'],
-                    detection.get('estimated_distance_m', 0),
-                    timestamp,
-                    time.time()
-                )
-            else:
-                # Guardar directamente
-                self.finalize_detection(detection, frame, timestamp)
+            # Sistema de detección mejorada - deshabilitada temporalmente para procesamiento directo
+            # Guardar directamente para mostrar cuadro verde inmediatamente
+            self.finalize_detection(detection, frame, timestamp)
                 
         except Exception as e:
             self.logger.error(f"[ERROR] Error finalizando mejor detección: {e}")
@@ -1502,9 +1491,14 @@ class RealtimeLPRSystem:
             if len(self.recent_detections) > 10:
                 self.recent_detections = self.recent_detections[-10:]
             
-            # Agregar a display
+            # Agregar a display con estado inicial
             display_detection = detection.copy()
             display_detection['display_time'] = time.time()
+            # Asegurar que tiene los campos de estado
+            if 'status' not in display_detection:
+                display_detection['status'] = 'confirmed'
+            if 'saved_to_db' not in display_detection:
+                display_detection['saved_to_db'] = False
             self.display_detections.append(display_detection)
             if len(self.display_detections) > 5:
                 self.display_detections = self.display_detections[-5:]
@@ -1529,28 +1523,40 @@ class RealtimeLPRSystem:
                         'camera_location': 'entrada_principal',
                         'estimated_distance_m': detection.get('estimated_distance_m')
                     }
+                    self.logger.info(f"[DB] Intentando guardar placa {detection['plate_text']} en BD...")
                     saved = self.db_manager.insert_detection(db_data)
                     
                     if saved:
                         detection['saved_to_db'] = True
                         detection['status'] = 'saved'
-                        # Actualizar también en display_detections
+                        # Actualizar también en display_detections - buscar por placa y tiempo reciente
+                        current_time_now = time.time()
+                        updated_count = 0
                         for disp_det in self.display_detections:
-                            if disp_det.get('plate_text') == detection['plate_text'] and \
-                               abs(disp_det.get('display_time', 0) - display_detection['display_time']) < 1.0:
-                                disp_det['saved_to_db'] = True
-                                disp_det['status'] = 'saved'
-                        self.logger.info(f"[DB] ✅ Placa {detection['plate_text']} guardada correctamente en BD")
+                            if disp_det.get('plate_text') == detection['plate_text']:
+                                # Actualizar si es la misma placa y está dentro de 10 segundos
+                                time_diff = abs(disp_det.get('display_time', 0) - current_time_now)
+                                if time_diff < 10.0:
+                                    disp_det['saved_to_db'] = True
+                                    disp_det['status'] = 'saved'
+                                    updated_count += 1
+                        if updated_count > 0:
+                            self.logger.info(f"[DB] ✅ Estado actualizado en {updated_count} detección(es) del display: {detection['plate_text']} -> GUARDADA (VERDE)")
+                        else:
+                            self.logger.warning(f"[DB] ⚠️ No se encontraron detecciones en display para actualizar: {detection['plate_text']}")
+                        self.logger.info(f"[DB] ✅ Placa {detection['plate_text']} guardada correctamente en BD - CUADRO VERDE ACTIVADO")
                     else:
                         # Error al guardar - mantener como confirmada pero no guardada
                         detection['status'] = 'confirmed'
                         detection['saved_to_db'] = False
                         # Actualizar también en display_detections
+                        current_time_now = time.time()
                         for disp_det in self.display_detections:
-                            if disp_det.get('plate_text') == detection['plate_text'] and \
-                               abs(disp_det.get('display_time', 0) - display_detection['display_time']) < 1.0:
-                                disp_det['saved_to_db'] = False
-                                disp_det['status'] = 'confirmed'
+                            if disp_det.get('plate_text') == detection['plate_text']:
+                                time_diff = abs(disp_det.get('display_time', 0) - current_time_now)
+                                if time_diff < 5.0:
+                                    disp_det['saved_to_db'] = False
+                                    disp_det['status'] = 'confirmed'
                         self.logger.error(f"[DB] ❌ ERROR: No se pudo guardar placa {detection['plate_text']} en BD - insert_detection retornó False")
                         self.logger.error(f"[DB] Detalles: YOLO={detection['yolo_confidence']:.2f}, OCR={detection['ocr_confidence']:.2f}, Distancia={detection.get('estimated_distance_m', 0):.1f}m")
                 except Exception as e:
