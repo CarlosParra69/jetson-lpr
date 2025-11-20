@@ -135,7 +135,7 @@ class RealtimeLPRSystem:
         
         # Sistema de agrupación inteligente de detecciones
         self.detection_groups = {}  # Agrupa detecciones similares por vehículo
-        self.group_timeout_sec = 10.0  # Tiempo para agrupar detecciones similares
+        self.group_timeout_sec = 2.0  # Tiempo para agrupar detecciones similares (reducido de 10s para reconocimiento más rápido)
         self.group_lock = threading.Lock()  # Lock para grupos de detecciones
         
         # Detección de movimiento para activar IA
@@ -639,20 +639,42 @@ class RealtimeLPRSystem:
                     elapsed = current_time_float - detection.get('display_time', 0)
                     time_remaining = timeout_sec - elapsed
                     
-                    # Color verde para la más reciente, amarillo para otras
-                    if i == len(self.display_detections) - 1:
-                        color = (0, 255, 0)  # Verde
-                    else:
-                        # Desvanecer a amarillo según tiempo
-                        alpha = max(0.3, time_remaining / timeout_sec)
-                        color = (0, int(255 * alpha), 255)  # Amarillo que se desvanece
+                    # Sistema de colores según estado:
+                    # - Amarillo (0, 255, 255): posible detección (en proceso)
+                    # - Verde (0, 255, 0): detección final confirmada y guardada
+                    # - Rojo (0, 0, 255): detección errónea o no guardada
+                    status = detection.get('status', 'possible')
+                    saved_to_db = detection.get('saved_to_db', False)
                     
-                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+                    if status == 'saved' and saved_to_db:
+                        # Verde: guardada correctamente en BD
+                        color = (0, 255, 0)
+                        status_text = "✓ GUARDADA"
+                    elif status == 'confirmed':
+                        # Verde claro: confirmada pero aún no guardada
+                        color = (0, 200, 0)
+                        status_text = "CONFIRMADA"
+                    elif status == 'error':
+                        # Rojo: error al guardar o detección errónea
+                        color = (0, 0, 255)
+                        status_text = "✗ ERROR"
+                    else:
+                        # Amarillo: posible detección (en proceso de agrupación)
+                        alpha = max(0.5, time_remaining / timeout_sec)
+                        color = (0, int(255 * alpha), 255)  # Amarillo
+                        status_text = "PROCESANDO"
+                    
+                    # Dibujar rectángulo con color según estado
+                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 3)
                     
                     # Texto de la placa
                     plate_text = detection['plate_text']
                     cv2.putText(display_frame, plate_text, (x1, y1-10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                    
+                    # Mostrar estado debajo de la placa
+                    cv2.putText(display_frame, status_text, (x1, y2+20), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
         
         return display_frame
     
@@ -914,6 +936,12 @@ class RealtimeLPRSystem:
             # Retornar la mejor detección
             best_detection, best_score = scored_detections[0]
             
+            # Asegurar que tiene los campos de estado
+            if 'status' not in best_detection:
+                best_detection['status'] = 'confirmed'
+            if 'saved_to_db' not in best_detection:
+                best_detection['saved_to_db'] = False
+            
             self.logger.info(f"[GROUP] Mejor detección seleccionada: {best_detection['plate_text']} "
                            f"(Score: {best_score:.3f}, OCR: {best_detection.get('ocr_confidence', 0):.2f}, "
                            f"Distancia: {best_detection.get('estimated_distance_m', 0):.1f}m)")
@@ -932,11 +960,11 @@ class RealtimeLPRSystem:
                 start_time = group_data.get('start_time', 0)
                 last_update = group_data.get('last_update', 0)
                 
-                # Si el grupo no ha recibido actualizaciones en 8 segundos, procesarlo
-                if (current_time - last_update) >= 8.0:
+                # Si el grupo no ha recibido actualizaciones en 2 segundos, procesarlo (reducido de 8s para reconocimiento más rápido)
+                if (current_time - last_update) >= 2.0:
                     groups_to_process.append(group_id)
-                # Si el grupo es muy antiguo (más de 15 segundos), eliminarlo sin procesar
-                elif (current_time - start_time) > 15.0:
+                # Si el grupo es muy antiguo (más de 5 segundos), eliminarlo sin procesar
+                elif (current_time - start_time) > 5.0:
                     groups_to_remove.append(group_id)
             
             # Procesar grupos listos
@@ -1058,11 +1086,35 @@ class RealtimeLPRSystem:
                                 
                                 # Validar formato de placa
                                 if not is_valid_license_plate(text):
+                                    # Agregar a display como error (rojo) brevemente
+                                    error_detection = {
+                                        'plate_text': text,
+                                        'bbox': [x1, y1, x2, y2],
+                                        'status': 'error',
+                                        'saved_to_db': False,
+                                        'display_time': current_time_float,
+                                        'ocr_confidence': ocr_conf
+                                    }
+                                    self.display_detections.append(error_detection)
+                                    if len(self.display_detections) > 5:
+                                        self.display_detections = self.display_detections[-5:]
                                     continue
                                 
                                 # Validación adicional: rechazar placas con confianza OCR muy baja (ultra-agresivo)
                                 if ocr_conf < 0.60:  # Umbral ultra-agresivo para evitar falsos positivos
                                     self.logger.debug(f"[FILTER] Placa rechazada por baja confianza OCR: {text} ({ocr_conf:.2f})")
+                                    # Agregar a display como error (rojo) brevemente
+                                    error_detection = {
+                                        'plate_text': text,
+                                        'bbox': [x1, y1, x2, y2],
+                                        'status': 'error',
+                                        'saved_to_db': False,
+                                        'display_time': current_time_float,
+                                        'ocr_confidence': ocr_conf
+                                    }
+                                    self.display_detections.append(error_detection)
+                                    if len(self.display_detections) > 5:
+                                        self.display_detections = self.display_detections[-5:]
                                     continue
                                 
                                 # Verificar si es similar a una detección reciente (evitar variaciones OCR)
@@ -1104,7 +1156,9 @@ class RealtimeLPRSystem:
                                     'estimated_distance_m': round(estimated_distance, 2),
                                     'processing_latency_ms': int(processing_latency * 1000),
                                     'valid': True,
-                                    'frame': frame.copy()  # Guardar frame para análisis mejorado
+                                    'frame': frame.copy(),  # Guardar frame para análisis mejorado
+                                    'status': 'possible',  # Estado: possible, confirmed, error, saved
+                                    'saved_to_db': False  # Indica si se guardó en BD
                                 }
                                 
                                 detections.append(detection)
@@ -1311,6 +1365,18 @@ class RealtimeLPRSystem:
                             else:
                                 self.logger.warning(f"[ENHANCED] Rechazando placa: confianza insuficiente "
                                                    f"(inicial: {initial_ocr_conf:.2f}, mejorada: {best_conf:.2f})")
+                                # Agregar a display como error (rojo) brevemente
+                                error_detection = {
+                                    'plate_text': initial_text,
+                                    'bbox': frozen_bbox,
+                                    'status': 'error',
+                                    'saved_to_db': False,
+                                    'display_time': time.time(),
+                                    'ocr_confidence': initial_ocr_conf
+                                }
+                                self.display_detections.append(error_detection)
+                                if len(self.display_detections) > 5:
+                                    self.display_detections = self.display_detections[-5:]
                                 del self.frozen_frames[detection_id]
                                 return
                         
@@ -1327,7 +1393,9 @@ class RealtimeLPRSystem:
                             'estimated_distance_m': round(estimated_distance, 2),
                             'processing_latency_ms': int((time.time() - timestamp_float) * 1000),
                             'enhanced': True,
-                            'valid': True
+                            'valid': True,
+                            'status': 'confirmed',  # Estado confirmado
+                            'saved_to_db': False  # Se establecerá después de guardar
                         }
                         
                         # Finalizar y guardar
@@ -1418,6 +1486,10 @@ class RealtimeLPRSystem:
     def finalize_detection(self, detection, frame, timestamp):
         """Finalizar y guardar detección"""
         try:
+            # Actualizar estado a confirmado
+            detection['status'] = 'confirmed'
+            detection['saved_to_db'] = False
+            
             # Agregar a detecciones recientes
             self.recent_detections.append(detection)
             if len(self.recent_detections) > 10:
@@ -1437,7 +1509,7 @@ class RealtimeLPRSystem:
                            f"OCR: {detection['ocr_confidence']:.2f}, "
                            f"Distancia: {detection['estimated_distance_m']:.1f}m)")
             
-            # Guardar en base de datos
+            # Guardar en base de datos y validar
             if self.db_manager:
                 try:
                     db_data = {
@@ -1450,9 +1522,37 @@ class RealtimeLPRSystem:
                         'camera_location': 'entrada_principal',
                         'estimated_distance_m': detection.get('estimated_distance_m')
                     }
-                    self.db_manager.insert_detection(db_data)
+                    saved = self.db_manager.insert_detection(db_data)
+                    
+                    if saved:
+                        detection['saved_to_db'] = True
+                        detection['status'] = 'saved'
+                        # Actualizar también en display_detections
+                        for disp_det in self.display_detections:
+                            if disp_det.get('plate_text') == detection['plate_text'] and \
+                               abs(disp_det.get('display_time', 0) - display_detection['display_time']) < 1.0:
+                                disp_det['saved_to_db'] = True
+                                disp_det['status'] = 'saved'
+                        self.logger.info(f"[DB] ✅ Placa {detection['plate_text']} guardada correctamente en BD")
+                    else:
+                        detection['status'] = 'error'
+                        detection['saved_to_db'] = False
+                        # Actualizar también en display_detections
+                        for disp_det in self.display_detections:
+                            if disp_det.get('plate_text') == detection['plate_text'] and \
+                               abs(disp_det.get('display_time', 0) - display_detection['display_time']) < 1.0:
+                                disp_det['saved_to_db'] = False
+                                disp_det['status'] = 'error'
+                        self.logger.warning(f"[DB] ❌ Error guardando placa {detection['plate_text']} en BD")
                 except Exception as e:
+                    detection['status'] = 'error'
+                    detection['saved_to_db'] = False
                     self.logger.warning(f"[WARN] Error guardando en BD: {e}")
+            else:
+                # Sin BD disponible, marcar como error
+                detection['status'] = 'error'
+                detection['saved_to_db'] = False
+                self.logger.warning(f"[WARN] BD no disponible - no se guardó placa {detection['plate_text']}")
             
             # Guardar en archivo
             if self.config["output"]["save_results"]:
