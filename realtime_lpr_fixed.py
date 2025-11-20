@@ -52,6 +52,14 @@ except ImportError:
     DB_AVAILABLE = False
     print("⚠️  Gestor de base de datos no disponible - continuando sin BD")
 
+# Intentar importar controlador PTZ
+try:
+    from ptz_controller import PTZController
+    PTZ_AVAILABLE = True
+except ImportError:
+    PTZ_AVAILABLE = False
+    print("⚠️  Controlador PTZ no disponible - continuando sin control PTZ")
+
 def is_valid_license_plate(text):
     """Validar si el texto corresponde a una placa válida"""
     if not text or len(text.strip()) < 3:
@@ -139,6 +147,10 @@ class RealtimeLPRSystem:
         # Configurar base de datos
         self.db_manager = None
         self.setup_database()
+        
+        # Configurar control PTZ
+        self.ptz_controller = None
+        self.setup_ptz()
         
         # Directorios
         self.results_dir = Path("results")
@@ -259,6 +271,13 @@ class RealtimeLPRSystem:
                 "password": "lpr_password",
                 "charset": "utf8mb4"
             },
+            "ptz": {
+                "enabled": True,
+                "auto_focus": True,  # Enfocar automáticamente en placas detectadas
+                "zoom_level": 0.7,  # Nivel de zoom al detectar placa (0.0 a 1.0)
+                "restore_after_sec": 3.0,  # Segundos antes de restaurar posición
+                "movement_speed": 0.6  # Velocidad de movimiento (0.0 a 1.0)
+            },
             "output": {
                 "save_results": True,
                 "save_images": False,           
@@ -326,6 +345,30 @@ class RealtimeLPRSystem:
             self.logger.warning(f"[WARN] No se pudo conectar a MySQL: {e}")
             self.logger.info("[INFO] Continuando sin base de datos")
             self.db_manager = None
+    
+    def setup_ptz(self):
+        """Configurar control PTZ"""
+        if not PTZ_AVAILABLE:
+            self.logger.warning("[WARN] Controlador PTZ no disponible - continuando sin PTZ")
+            return
+        
+        if not self.config.get("ptz", {}).get("enabled", False):
+            self.logger.info("[INFO] Control PTZ deshabilitado en configuración")
+            return
+        
+        try:
+            camera_config = self.config["camera"]
+            self.ptz_controller = PTZController(
+                camera_ip=camera_config["ip"],
+                username=camera_config["user"],
+                password=camera_config["password"]
+            )
+            self.logger.info("[OK] Controlador PTZ inicializado")
+            
+        except Exception as e:
+            self.logger.warning(f"[WARN] No se pudo inicializar control PTZ: {e}")
+            self.logger.info("[INFO] Continuando sin control PTZ")
+            self.ptz_controller = None
     
     def setup_models(self):
         """Inicializar modelos de IA"""
@@ -736,6 +779,24 @@ class RealtimeLPRSystem:
                                                f"(YOLO: {confidence:.2f}, OCR: {ocr_conf:.2f}, "
                                                f"Latencia: {int(processing_latency * 1000)}ms)")
                                 
+                                # Control PTZ: Enfocar automáticamente en la placa
+                                if self.ptz_controller and self.config.get("ptz", {}).get("auto_focus", False):
+                                    try:
+                                        frame_height, frame_width = frame.shape[:2]
+                                        zoom_level = self.config["ptz"].get("zoom_level", 0.7)
+                                        restore_after = self.config["ptz"].get("restore_after_sec", 3.0)
+                                        
+                                        self.ptz_controller.focus_on_plate(
+                                            bbox=[x1, y1, x2, y2],
+                                            frame_width=frame_width,
+                                            frame_height=frame_height,
+                                            zoom_level=zoom_level,
+                                            restore_after=restore_after
+                                        )
+                                        self.logger.info(f"[PTZ] Enfoque automático activado para placa {text}")
+                                    except Exception as e:
+                                        self.logger.warning(f"[WARN] Error en control PTZ: {e}")
+                                
                                 # Guardar en base de datos
                                 if self.db_manager:
                                     try:
@@ -953,6 +1014,13 @@ class RealtimeLPRSystem:
             except Exception as e:
                 self.logger.warning(f"[WARN] Error cerrando BD: {e}")
         
+        # Detener control PTZ
+        if self.ptz_controller:
+            try:
+                self.ptz_controller.stop()
+            except Exception as e:
+                self.logger.warning(f"[WARN] Error deteniendo PTZ: {e}")
+        
         # Estadísticas finales
         if self.start_time:
             runtime = time.time() - self.start_time
@@ -996,6 +1064,7 @@ def main():
     print("[DATABASE] Conexión MySQL habilitada")
     print("[IMPROVED] Cooldown inteligente por ubicación y texto")
     print("[IMPROVED] Validación mejorada de OCR para evitar errores")
+    print("[PTZ] Control automático: Scroll y zoom hacia placas detectadas")
     print("=" * 50)
     
     # Detectar automáticamente si estamos en un entorno sin GUI
