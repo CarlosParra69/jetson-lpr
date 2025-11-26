@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-⚡ SISTEMA LPR TIEMPO REAL - VERSIÓN 1.0.0
+SISTEMA LPR TIEMPO REAL - VERSIÓN BETA 1.0.0
 ================================================================
 
 Optimizaciones para tiempo real:
@@ -61,39 +61,67 @@ except ImportError:
     print("⚠️  Controlador PTZ no disponible - continuando sin control PTZ")
 
 def is_valid_license_plate(text):
-    """Validar si el texto corresponde a una placa válida"""
+    """
+    Validar si el texto corresponde a una placa válida colombiana
+    Validación más estricta para evitar reconocimientos falsos
+    """
     if not text or len(text.strip()) < 3:
         return False
     
     clean_text = re.sub(r'[^A-Z0-9]', '', text.upper().strip())
     
+    # Validar longitud (placas colombianas típicamente 6 caracteres)
+    if len(clean_text) < 5 or len(clean_text) > 7:
+        return False
+    
+    # Debe tener al menos 2 letras y 2 números
+    letters = len(re.findall(r'[A-Z]', clean_text))
+    numbers = len(re.findall(r'[0-9]', clean_text))
+    
+    if letters < 2 or numbers < 2:
+        return False
+    
+    # Patrones específicos de placas colombianas (más estrictos)
     patterns = [
-        r'^[A-Z]{3}[0-9]{3}$',      # ABC123
-        r'^[A-Z]{3}[0-9]{2}[A-Z]$', # ABC12D
-        r'^[A-Z]{2}[0-9]{4}$',      # AB1234
-        r'^[A-Z]{4}[0-9]{2}$',      # ABCD12
-        r'^[0-9]{3}[A-Z]{3}$',      # 123ABC
-        r'^[A-Z]{1}[0-9]{2}[A-Z]{3}$', # A12BCD
-        r'^[A-Z]{2}[0-9]{3}[A-Z]{1}$', # AB123C
+        r'^[A-Z]{3}[0-9]{3}$',      # ABC123 (formato estándar)
+        r'^[A-Z]{3}[0-9]{2}[A-Z]$', # ABC12D (formato alternativo)
+        r'^[A-Z]{2}[0-9]{4}$',      # AB1234 (formato antiguo)
+        r'^[A-Z]{2}[0-9]{3}[A-Z]$', # AB123C (formato mixto)
     ]
     
-    if len(clean_text) < 4 or len(clean_text) > 8:
-        return False
-    
-    has_letter = bool(re.search(r'[A-Z]', clean_text))
-    has_number = bool(re.search(r'[0-9]', clean_text))
-    
-    if not (has_letter and has_number):
-        return False
-    
+    # Verificar contra patrones específicos
     for pattern in patterns:
         if re.match(pattern, clean_text):
             return True
     
-    if len(clean_text) >= 4 and has_letter and has_number:
-        return True
+    # Validación adicional: no debe tener solo números o solo letras
+    if letters == 0 or numbers == 0:
+        return False
     
-    return False
+    # Validación de formato: debe alternar o tener estructura razonable
+    # Rechazar patrones sospechosos como "VU54" (muy corto, formato raro)
+    if len(clean_text) == 4:
+        # Placas de 4 caracteres deben tener al menos 2 números y 2 letras
+        if not (letters >= 2 and numbers >= 2):
+            return False
+        # Rechazar si empieza con solo letras seguidas (ej: VU54 -> VU5 sería mejor)
+        if re.match(r'^[A-Z]{2}[0-9]{2}$', clean_text):
+            # Formato VU54 es válido pero necesita más validación
+            return True
+    
+    # Para placas de 5-7 caracteres, validar estructura
+    if len(clean_text) >= 5:
+        # Debe tener mezcla razonable de letras y números
+        letter_ratio = letters / len(clean_text)
+        number_ratio = numbers / len(clean_text)
+        
+        # Las placas colombianas típicamente tienen 40-60% letras y 40-60% números
+        if letter_ratio < 0.3 or letter_ratio > 0.7:
+            return False
+        if number_ratio < 0.3 or number_ratio > 0.7:
+            return False
+    
+    return False  # Por defecto, rechazar si no cumple patrones específicos
 
 class RealtimeLPRSystem:
     """Sistema LPR optimizado para tiempo real - Versión corregida"""
@@ -261,26 +289,28 @@ class RealtimeLPRSystem:
                 "headless_mode": self.headless # Modo sin GUI
             },
             "processing": {
-                "confidence_threshold": 0.20,  # UMBRAL MUY BAJO para detección agresiva de placas colombianas
-                "plate_confidence_min": 0.25,  # OCR reducido agresivamente para placas colombianas (amarillas/blancas)
-                "max_detections": 5,            # Más detecciones simultáneas
+                "confidence_threshold": 0.40,  # Umbral aumentado para evitar falsos positivos
+                "plate_confidence_min": 0.50,  # OCR aumentado para reconocimiento más preciso
+                "max_detections": 3,            # Reducido para evitar detecciones múltiples falsas
                 "ocr_cache_enabled": True,
-                "detection_cooldown_sec": 0.8,  # Cooldown muy reducido para detección más frecuente
-                "bbox_cooldown_sec": 0.5,       # Cooldown por ubicación muy reducido
-                "motion_cooldown_sec": 1,       # Cooldown para detección de movimiento reducido
-                "similarity_threshold": 0.6,    # Umbral más bajo para agrupar variaciones
-                "max_plate_variations": 5,      # Más variaciones a considerar
-                "max_detection_distance_m": 10.0,  # Distancia máxima aumentada para detectar más lejos
-                "min_plate_width_px": 50,        # Ancho mínimo reducido (detectar placas más pequeñas)
-                "min_plate_height_px": 20,       # Altura mínima reducida (detectar placas más pequeñas)
-                "distance_filter_enabled": False,  # Deshabilitar filtro de distancia para detección agresiva
-                "detection_display_timeout_sec": 3.0,  # Tiempo antes de borrar cuadros de detección
+                "detection_cooldown_sec": 2.0,  # Cooldown aumentado para evitar duplicados
+                "bbox_cooldown_sec": 1.5,       # Cooldown por ubicación aumentado
+                "motion_cooldown_sec": 1,       # Cooldown para detección de movimiento
+                "similarity_threshold": 0.75,   # Umbral aumentado para agrupar solo variaciones muy similares
+                "max_plate_variations": 3,      # Menos variaciones para evitar errores
+                "max_detection_distance_m": 15.0,  # Distancia máxima aumentada para mayor alcance
+                "min_plate_width_px": 40,        # Ancho mínimo reducido para detectar más lejos
+                "min_plate_height_px": 15,       # Altura mínima reducida para detectar más lejos
+                "distance_filter_enabled": True,  # Habilitar filtro de distancia pero con rango amplio
+                "detection_display_timeout_sec": 5.0,  # Tiempo aumentado para ver detecciones
                 "enhanced_detection_enabled": True,    # Habilitar detección mejorada con zoom
-                "freeze_frame_sec": 1.5,               # Tiempo reducido para respuesta más rápida
-                "enhanced_ocr_confidence_min": 0.60,    # Confianza mínima OCR reducida (más agresivo)
+                "freeze_frame_sec": 2.0,               # Tiempo para mejor estabilización
+                "enhanced_ocr_confidence_min": 0.70,   # Confianza mínima OCR aumentada para mejor precisión
                 "colombian_plate_optimization": True,  # Optimización específica para placas colombianas
-                "color_detection_enabled": True,       # Detectar placas amarillas/blancas
-                "preprocess_aggressive": True          # Preprocesamiento agresivo
+                "color_detection_enabled": False,      # Deshabilitar filtro de color (más permisivo)
+                "preprocess_aggressive": True,         # Preprocesamiento agresivo
+                "min_roi_width_for_ocr": 80,          # Ancho mínimo de ROI para OCR (mejor calidad)
+                "min_roi_height_for_ocr": 30           # Altura mínima de ROI para OCR (mejor calidad)
             },
             "database": {
                 "enabled": True,
@@ -1167,9 +1197,8 @@ class RealtimeLPRSystem:
                         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                         confidence = float(box.conf[0].cpu().numpy())
                         
-                        # Umbral de confianza reducido para detección agresiva
-                        # Aceptar detecciones con confianza muy baja para placas colombianas
-                        min_yolo_conf = max(0.15, self.config["processing"]["confidence_threshold"])
+                        # Umbral de confianza aumentado para evitar falsos positivos
+                        min_yolo_conf = self.config["processing"]["confidence_threshold"]
                         if confidence < min_yolo_conf:
                             continue
                         
@@ -1235,20 +1264,19 @@ class RealtimeLPRSystem:
                                 # Validación adicional: rechazar placas con confianza OCR muy baja
                                 ocr_min_threshold = self.config["processing"]["plate_confidence_min"]
                                 if ocr_conf < ocr_min_threshold:
-                                    self.logger.warning(f"[FILTER] Placa rechazada por baja confianza OCR: {text} (OCR: {ocr_conf:.2f}, YOLO: {confidence:.2f}, mínimo: {ocr_min_threshold:.2f})")
-                                    # Agregar a display como error (rojo) brevemente
-                                    error_detection = {
-                                        'plate_text': text,
-                                        'bbox': [x1, y1, x2, y2],
-                                        'status': 'error',
-                                        'saved_to_db': False,
-                                        'display_time': current_time_float,
-                                        'ocr_confidence': ocr_conf,
-                                        'yolo_confidence': confidence
-                                    }
-                                    self.display_detections.append(error_detection)
-                                    if len(self.display_detections) > 5:
-                                        self.display_detections = self.display_detections[-5:]
+                                    self.logger.debug(f"[FILTER] Placa rechazada por baja confianza OCR: {text} (OCR: {ocr_conf:.2f}, YOLO: {confidence:.2f}, mínimo: {ocr_min_threshold:.2f})")
+                                    continue
+                                
+                                # Validación adicional: rechazar placas muy cortas (probablemente errores OCR)
+                                if len(text) < 5:
+                                    self.logger.debug(f"[FILTER] Placa rechazada por longitud insuficiente: {text} (longitud: {len(text)}, mínimo: 5)")
+                                    continue
+                                
+                                # Validación adicional: debe tener al menos 2 letras y 2 números
+                                letters = len(re.findall(r'[A-Z]', text))
+                                numbers = len(re.findall(r'[0-9]', text))
+                                if letters < 2 or numbers < 2:
+                                    self.logger.debug(f"[FILTER] Placa rechazada por formato inválido: {text} (letras: {letters}, números: {numbers})")
                                     continue
                                 
                                 # Verificar si es similar a una detección reciente (evitar variaciones OCR)
@@ -1318,10 +1346,11 @@ class RealtimeLPRSystem:
                                 self.logger.info(f"[GROUP] Detección agregada al grupo {group_id}: {text} "
                                                f"(OCR: {ocr_conf:.2f}, Distancia: {estimated_distance:.1f}m)")
                                 
-                                # Si la confianza es alta, procesar inmediatamente sin esperar agrupación
-                                if ocr_conf >= 0.60 and is_valid_license_plate(text):
-                                    # Procesar inmediatamente si la confianza es alta
-                                    self.logger.info(f"[FAST] Procesando inmediatamente placa de alta confianza: {text}")
+                                # Si la confianza es muy alta, procesar inmediatamente sin esperar agrupación
+                                # Solo si cumple validación estricta y tiene alta confianza
+                                if ocr_conf >= 0.70 and is_valid_license_plate(text) and len(text) >= 5:
+                                    # Procesar inmediatamente si la confianza es muy alta y formato válido
+                                    self.logger.info(f"[FAST] Procesando inmediatamente placa de alta confianza: {text} (OCR: {ocr_conf:.2f})")
                                     try:
                                         self.finalize_detection(detection, frame, current_time)
                                     except Exception as e:
@@ -1375,23 +1404,32 @@ class RealtimeLPRSystem:
             if roi.size == 0:
                 return []
             
-            # 🔥 OPTIMIZACIÓN 1: Aumentar tamaño mínimo para mejor OCR
-            # Las placas colombianas necesitan más resolución para caracteres claros
-            target_height = 80   # Altura aumentada para mejor OCR
-            target_width = 240   # Ancho aumentado para mejor OCR
+            # 🔥 OPTIMIZACIÓN 1: Verificar tamaño mínimo antes de procesar OCR
+            # Las placas colombianas necesitan tamaño mínimo para reconocimiento preciso
+            min_width = self.config["processing"].get("min_roi_width_for_ocr", 80)
+            min_height = self.config["processing"].get("min_roi_height_for_ocr", 30)
+            
+            # Si el ROI es muy pequeño, rechazar (no se puede reconocer bien)
+            if roi.shape[1] < min_width or roi.shape[0] < min_height:
+                self.logger.debug(f"[OCR] ROI muy pequeño para OCR: {roi.shape[1]}x{roi.shape[0]} (mínimo: {min_width}x{min_height})")
+                return []
+            
+            # Aumentar tamaño para mejor OCR
+            target_height = 100   # Altura aumentada para mejor OCR
+            target_width = 300   # Ancho aumentado para mejor OCR
         
             if roi.shape[0] > target_height or roi.shape[1] > target_width:
                 scale_h = target_height / roi.shape[0] if roi.shape[0] > target_height else 1.0
                 scale_w = target_width / roi.shape[1] if roi.shape[1] > target_width else 1.0
                 scale = min(scale_h, scale_w)
             
-                new_h = max(40, int(roi.shape[0] * scale))  # Mínimo 40px altura (aumentado)
-                new_w = max(100, int(roi.shape[1] * scale))  # Mínimo 100px ancho (aumentado)
-                roi = cv2.resize(roi, (new_w, new_h), interpolation=cv2.INTER_CUBIC)  # CUBIC para mejor calidad
+                new_h = max(min_height, int(roi.shape[0] * scale))
+                new_w = max(min_width, int(roi.shape[1] * scale))
+                roi = cv2.resize(roi, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
             else:
-                # Si es muy pequeño, ampliar para mejor OCR
-                if roi.shape[0] < 40 or roi.shape[1] < 100:
-                    scale_factor = max(40 / roi.shape[0], 100 / roi.shape[1])
+                # Si es pequeño pero cumple mínimo, ampliar para mejor OCR
+                if roi.shape[0] < target_height or roi.shape[1] < target_width:
+                    scale_factor = max(target_height / roi.shape[0], target_width / roi.shape[1])
                     new_h = int(roi.shape[0] * scale_factor)
                     new_w = int(roi.shape[1] * scale_factor)
                     roi = cv2.resize(roi, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
@@ -1812,16 +1850,36 @@ class RealtimeLPRSystem:
             self.logger.error(f"[ERROR] Error finalizando detección: {e}")
     
     def save_detection(self, detection):
-        """Guardar detección"""
+        """Guardar detección - Corregido para evitar error de serialización JSON"""
         try:
             results_file = self.results_dir / f"realtime_detections_{datetime.now().strftime('%Y%m%d')}.jsonl"
             
-            with open(results_file, 'a') as f:
-                json.dump(detection, f)
+            # Crear copia de la detección sin objetos no serializables
+            detection_copy = detection.copy()
+            
+            # Eliminar frame (ndarray no es serializable en JSON)
+            if 'frame' in detection_copy:
+                del detection_copy['frame']
+            
+            # Convertir bbox a lista si es ndarray
+            if 'bbox' in detection_copy and isinstance(detection_copy['bbox'], np.ndarray):
+                detection_copy['bbox'] = detection_copy['bbox'].tolist()
+            
+            # Convertir cualquier otro ndarray a lista
+            for key, value in detection_copy.items():
+                if isinstance(value, np.ndarray):
+                    detection_copy[key] = value.tolist()
+                elif isinstance(value, (np.integer, np.floating)):
+                    detection_copy[key] = float(value)
+            
+            with open(results_file, 'a', encoding='utf-8') as f:
+                json.dump(detection_copy, f, ensure_ascii=False)
                 f.write('\n')
                 
         except Exception as e:
             self.logger.error(f"[ERROR] Error guardando: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
     
     def reset_stats(self):
         """Reset estadísticas"""
@@ -1970,7 +2028,7 @@ def main():
     
     args = parser.parse_args()
     
-    print("⚡⚡ SISTEMA LPR TIEMPO REAL - PLACAS COLOMBIANAS ⚡⚡")
+    print("SISTEMA LPR TIEMPO REAL")
     print("=" * 60)
     print("[TARGET] Enfoque: DETECCIÓN AGRESIVA DE PLACAS COLOMBIANAS")
     print("[COLOMBIA] Optimizado para placas AMARILLAS y BLANCAS")
