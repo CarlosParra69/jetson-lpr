@@ -157,6 +157,8 @@ class RealtimeLPRSystem:
         self.recent_detections = []  # Detecciones recientes con timestamp
         self.recent_plate_variations = {}  # Para detectar variaciones incorrectas del OCR
         self.display_detections = []  # Detecciones para mostrar (con expiración)
+        self.yolo_boxes = []  # Cuadros YOLO para mostrar inmediatamente (antes de OCR)
+        self.yolo_boxes_lock = threading.Lock()  # Lock para yolo_boxes
         # Funcionalidad de detección mejorada eliminada - mostrar detecciones inmediatamente
         
         # Sistema de agrupación inteligente de detecciones
@@ -279,36 +281,39 @@ class RealtimeLPRSystem:
             "realtime_optimization": {
                 "capture_target_fps": 30,      # FPS aumentado para más frames
                 "display_target_fps": 30,      # FPS de display aumentado para fluidez
-                "ai_process_every": 3,         # IA cada 3 frames (balance velocidad/precisión)
+                "ai_process_every": 1,         # IA cada frame para máxima fluidez (Jetson Orin Nano)
                 "motion_activation": False,    # Desactivar detección de movimiento para procesar siempre
-                "display_scale": 0.6,          # Display más grande para mejor visualización
+                "display_scale": 0.5,          # Display más pequeño para mejor rendimiento
                 "minimal_rendering": True,     
                 "fast_resize": True,           
                 "aggressive_cache": True,      # Cache más agresivo
                 "headless_mode": self.headless, # Modo sin GUI
-                "skip_frame_processing": False # No saltar frames en display
+                "skip_frame_processing": False, # No saltar frames en display
+                "show_yolo_boxes_immediately": True  # Mostrar cuadros YOLO inmediatamente
             },
             "processing": {
-                "confidence_threshold": 0.40,  # Umbral aumentado para evitar falsos positivos
-                "plate_confidence_min": 0.50,  # OCR aumentado para reconocimiento más preciso
-                "max_detections": 3,            # Reducido para evitar detecciones múltiples falsas
+                "confidence_threshold": 0.35,  # Umbral reducido para más detecciones (Jetson Orin Nano)
+                "plate_confidence_min": 0.45,  # OCR reducido para más detecciones
+                "max_detections": 5,            # Aumentado para múltiples detecciones
                 "ocr_cache_enabled": True,
-                "detection_cooldown_sec": 2.0,  # Cooldown aumentado para evitar duplicados
-                "bbox_cooldown_sec": 1.5,       # Cooldown por ubicación aumentado
+                "detection_cooldown_sec": 1.5,  # Cooldown reducido para más fluidez
+                "bbox_cooldown_sec": 1.0,       # Cooldown reducido para más fluidez
                 "motion_cooldown_sec": 1,       # Cooldown para detección de movimiento
-                "similarity_threshold": 0.75,   # Umbral aumentado para agrupar solo variaciones muy similares
-                "max_plate_variations": 3,      # Menos variaciones para evitar errores
+                "similarity_threshold": 0.70,   # Umbral reducido para agrupar más variaciones
+                "max_plate_variations": 5,      # Más variaciones para mejor validación
                 "max_detection_distance_m": 30.0,  # Distancia máxima aumentada para máximo alcance (30 metros)
                 "min_plate_width_px": 25,        # Ancho mínimo muy reducido para detectar placas muy lejanas
                 "min_plate_height_px": 10,       # Altura mínima muy reducida para detectar placas muy lejanas
                 "distance_filter_enabled": True,  # Habilitar filtro de distancia pero con rango amplio
-                "detection_display_timeout_sec": 15.0,  # Tiempo aumentado para ver múltiples detecciones
+                "detection_display_timeout_sec": 10.0,  # Tiempo reducido para mejor rendimiento
                 "enhanced_detection_enabled": False,   # Deshabilitado - mostrar detecciones inmediatamente
                 "colombian_plate_optimization": True,  # Optimización específica para placas colombianas
                 "color_detection_enabled": False,      # Deshabilitar filtro de color (más permisivo)
-                "preprocess_aggressive": True,         # Preprocesamiento agresivo
-                "min_roi_width_for_ocr": 60,          # Ancho mínimo de ROI para OCR (reducido para mayor alcance)
-                "min_roi_height_for_ocr": 20           # Altura mínima de ROI para OCR (reducido para mayor alcance)
+                "preprocess_aggressive": False,        # Preprocesamiento menos agresivo para velocidad
+                "min_roi_width_for_ocr": 50,          # Ancho mínimo de ROI para OCR (reducido para mayor alcance)
+                "min_roi_height_for_ocr": 15,         # Altura mínima de ROI para OCR (reducido para mayor alcance)
+                "multiple_detection_validation": True,  # Validación mejorada para múltiples detecciones
+                "min_validations_for_confirmation": 2   # Mínimo de validaciones para confirmar placa
             },
             "database": {
                 "enabled": True,
@@ -753,6 +758,34 @@ class RealtimeLPRSystem:
                 # Limpiar detecciones expiradas (aumentado a 10 segundos para mejor visualización)
                 current_time_float = time.time()
                 timeout_sec = self.config["processing"].get("detection_display_timeout_sec", 10.0)
+                yolo_timeout_sec = 2.0  # Timeout más corto para cuadros YOLO (2 segundos)
+                
+                # MOSTRAR CUADROS YOLO INMEDIATAMENTE (antes de OCR)
+                if self.config["realtime_optimization"].get("show_yolo_boxes_immediately", True):
+                    with self.yolo_boxes_lock:
+                        # Limpiar cuadros YOLO expirados
+                        valid_yolo_boxes = [
+                            box for box in self.yolo_boxes
+                            if (current_time_float - box.get('display_time', 0)) < yolo_timeout_sec
+                        ]
+                        self.yolo_boxes = valid_yolo_boxes
+                        
+                        # Dibujar cuadros YOLO inmediatamente (azul cian para diferenciarlos)
+                        for yolo_box in valid_yolo_boxes:
+                            bbox = yolo_box['bbox']
+                            conf = yolo_box['confidence']
+                            x1, y1, x2, y2 = [int(coord * scale) for coord in bbox]
+                            
+                            # Color azul cian para cuadros YOLO (antes de OCR)
+                            yolo_color = (255, 255, 0)  # Cian en BGR
+                            
+                            # Dibujar rectángulo YOLO (línea delgada)
+                            cv2.rectangle(display_frame, (x1, y1), (x2, y2), yolo_color, 1)
+                            
+                            # Mostrar confianza YOLO
+                            conf_text = f"YOLO: {conf:.2f}"
+                            cv2.putText(display_frame, conf_text, (x1, y1-5), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, yolo_color, 1)
                 
                 # Combinar display_detections y active_detections
                 all_detections = list(self.display_detections) + list(self.active_detections)
@@ -767,7 +800,7 @@ class RealtimeLPRSystem:
                 self.display_detections = [d for d in valid_detections if d in self.display_detections]
                 self.active_detections = [d for d in valid_detections if d in self.active_detections]
                 
-                # Mostrar todas las detecciones válidas
+                # Mostrar todas las detecciones válidas (con OCR)
                 for i, detection in enumerate(valid_detections):
                     bbox = detection['bbox']
                     x1, y1, x2, y2 = [int(coord * scale) for coord in bbox]
@@ -1029,10 +1062,11 @@ class RealtimeLPRSystem:
     def select_best_detection_from_group(self, group_id):
         """
         Seleccionar la mejor detección de un grupo basándose en:
-        1. Confianza OCR más alta
-        2. Formato más válido (longitud correcta, ej: NON491 > NON49)
-        3. Distancia más cercana (menor distancia = mejor)
-        4. Confianza YOLO más alta
+        1. Múltiples validaciones (requiere mínimo de detecciones similares)
+        2. Confianza OCR más alta
+        3. Formato más válido (longitud correcta, ej: NON491 > NON49)
+        4. Distancia más cercana (menor distancia = mejor)
+        5. Confianza YOLO más alta
         """
         with self.group_lock:
             if group_id not in self.detection_groups:
@@ -1044,7 +1078,38 @@ class RealtimeLPRSystem:
             if not detections:
                 return None
             
-            # Función de scoring para cada detección
+            # VALIDACIÓN MÚLTIPLE: Requiere mínimo de detecciones similares
+            min_validations = self.config["processing"].get("min_validations_for_confirmation", 2)
+            if len(detections) < min_validations:
+                # No hay suficientes validaciones, esperar más detecciones
+                return None
+            
+            # Agrupar detecciones por texto similar (normalizado)
+            text_groups = {}
+            for det in detections:
+                text = det.get('plate_text', '')
+                # Normalizar texto para agrupar variaciones similares
+                normalized = re.sub(r'[^A-Z0-9]', '', text.upper())
+                if normalized not in text_groups:
+                    text_groups[normalized] = []
+                text_groups[normalized].append(det)
+            
+            # Buscar el texto que tiene más validaciones
+            best_text = None
+            max_validations = 0
+            for normalized_text, text_detections in text_groups.items():
+                if len(text_detections) >= min_validations and len(text_detections) > max_validations:
+                    max_validations = len(text_detections)
+                    best_text = normalized_text
+            
+            # Si no hay texto con suficientes validaciones, retornar None
+            if best_text is None or max_validations < min_validations:
+                return None
+            
+            # Usar solo las detecciones del texto más validado
+            validated_detections = text_groups[best_text]
+            
+            # Función de scoring para cada detección (solo de las validadas)
             def calculate_score(det):
                 ocr_conf = det.get('ocr_confidence', 0)
                 yolo_conf = det.get('yolo_confidence', 0)
@@ -1080,14 +1145,18 @@ class RealtimeLPRSystem:
                 
                 return score
             
-            # Calcular score para cada detección
-            scored_detections = [(det, calculate_score(det)) for det in detections]
+            # Calcular score para cada detección validada
+            scored_detections = [(det, calculate_score(det)) for det in validated_detections]
             
             # Ordenar por score descendente
             scored_detections.sort(key=lambda x: x[1], reverse=True)
             
-            # Retornar la mejor detección
+            # Retornar la mejor detección validada
             best_detection, best_score = scored_detections[0]
+            
+            # Agregar información de validación múltiple
+            best_detection['validation_count'] = max_validations
+            best_detection['total_detections'] = len(detections)
             
             # Asegurar que tiene los campos de estado
             if 'status' not in best_detection:
@@ -1223,6 +1292,20 @@ class RealtimeLPRSystem:
                         y2 = min(frame.shape[0], y2)
                         
                         if x2 > x1 and y2 > y1:
+                            # MOSTRAR CUADRO YOLO INMEDIATAMENTE (antes de OCR)
+                            if self.config["realtime_optimization"].get("show_yolo_boxes_immediately", True):
+                                with self.yolo_boxes_lock:
+                                    # Agregar cuadro YOLO para mostrar inmediatamente
+                                    yolo_box = {
+                                        'bbox': [x1, y1, x2, y2],
+                                        'confidence': confidence,
+                                        'display_time': current_time_float
+                                    }
+                                    self.yolo_boxes.append(yolo_box)
+                                    # Mantener solo últimas 10 detecciones YOLO
+                                    if len(self.yolo_boxes) > 10:
+                                        self.yolo_boxes = self.yolo_boxes[-10:]
+                            
                             # Filtrar por distancia/rango de detección
                             frame_height, frame_width = frame.shape[:2]
                             is_within_range, estimated_distance = self.is_within_detection_range(
@@ -1592,11 +1675,14 @@ class RealtimeLPRSystem:
             # Log final - SOLO mostrar en terminal la placa final confirmada
             self.detections_count += 1
             plate_text = detection['plate_text']
+            validation_count = detection.get('validation_count', 1)
+            total_detections = detection.get('total_detections', 1)
             # Solo loguear placas finales confirmadas (no todas las detecciones intermedias)
             self.logger.info(f"[TARGET] ✅ PLACA FINAL: {plate_text} "
                            f"(YOLO: {detection['yolo_confidence']:.2f}, "
                            f"OCR: {detection['ocr_confidence']:.2f}, "
-                           f"Distancia: {detection['estimated_distance_m']:.1f}m)")
+                           f"Distancia: {detection['estimated_distance_m']:.1f}m, "
+                           f"Validaciones: {validation_count}/{total_detections})")
             
             # Guardar en base de datos y validar
             if self.db_manager:
@@ -1747,6 +1833,8 @@ class RealtimeLPRSystem:
         self.recent_detections.clear()
         self.display_detections.clear()
         self.active_detections.clear()
+        with self.yolo_boxes_lock:
+            self.yolo_boxes.clear()
         self.logger.info("[CLEAR] Cache limpiado")
     
     def save_screenshot(self, frame):
