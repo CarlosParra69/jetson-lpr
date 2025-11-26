@@ -163,7 +163,7 @@ class RealtimeLPRSystem:
         
         # Sistema de agrupación inteligente de detecciones
         self.detection_groups = {}  # Agrupa detecciones similares por vehículo
-        self.group_timeout_sec = 0.2  # Tiempo muy reducido para procesar grupos más rápido (0.2s)
+        self.group_timeout_sec = 2.0  # Tiempo de 2 segundos para procesar grupos
         self.group_lock = threading.Lock()  # Lock para grupos de detecciones
         self.processing_groups = set()  # Grupos que están siendo procesados para evitar duplicados
         self.active_detections = []  # Detecciones activas para mostrar inmediatamente
@@ -296,8 +296,8 @@ class RealtimeLPRSystem:
                 "plate_confidence_min": 0.45,  # OCR reducido para más detecciones
                 "max_detections": 5,            # Aumentado para múltiples detecciones
                 "ocr_cache_enabled": True,
-                "detection_cooldown_sec": 1.5,  # Cooldown reducido para más fluidez
-                "bbox_cooldown_sec": 1.0,       # Cooldown reducido para más fluidez
+                "detection_cooldown_sec": 0.5,  # Cooldown muy reducido para máxima fluidez
+                "bbox_cooldown_sec": 0.3,       # Cooldown muy reducido para máxima fluidez
                 "motion_cooldown_sec": 1,       # Cooldown para detección de movimiento
                 "similarity_threshold": 0.70,   # Umbral reducido para agrupar más variaciones
                 "max_plate_variations": 5,      # Más variaciones para mejor validación
@@ -313,7 +313,7 @@ class RealtimeLPRSystem:
                 "min_roi_width_for_ocr": 50,          # Ancho mínimo de ROI para OCR (reducido para mayor alcance)
                 "min_roi_height_for_ocr": 15,         # Altura mínima de ROI para OCR (reducido para mayor alcance)
                 "multiple_detection_validation": True,  # Validación mejorada para múltiples detecciones
-                "min_validations_for_confirmation": 2   # Mínimo de validaciones para confirmar placa
+                "min_validations_for_confirmation": 1   # Mínimo de validaciones (1 para detección rápida)
             },
             "database": {
                 "enabled": True,
@@ -758,7 +758,7 @@ class RealtimeLPRSystem:
                 # Limpiar detecciones expiradas (aumentado a 10 segundos para mejor visualización)
                 current_time_float = time.time()
                 timeout_sec = self.config["processing"].get("detection_display_timeout_sec", 10.0)
-                yolo_timeout_sec = 2.0  # Timeout más corto para cuadros YOLO (2 segundos)
+                yolo_timeout_sec = 3.0  # Timeout para cuadros YOLO (3 segundos para mejor visibilidad)
                 
                 # MOSTRAR CUADROS YOLO INMEDIATAMENTE (antes de OCR)
                 if self.config["realtime_optimization"].get("show_yolo_boxes_immediately", True):
@@ -1078,8 +1078,20 @@ class RealtimeLPRSystem:
             if not detections:
                 return None
             
-            # VALIDACIÓN MÚLTIPLE: Requiere mínimo de detecciones similares
-            min_validations = self.config["processing"].get("min_validations_for_confirmation", 2)
+            # VALIDACIÓN MÚLTIPLE: Requiere mínimo de detecciones similares (reducido para velocidad)
+            min_validations = self.config["processing"].get("min_validations_for_confirmation", 1)
+            # Si solo hay 1 detección y tiene alta confianza, aceptarla inmediatamente
+            if len(detections) == 1:
+                single_det = detections[0]
+                if single_det.get('ocr_confidence', 0) >= 0.60 and is_valid_license_plate(single_det.get('plate_text', '')):
+                    single_det['validation_count'] = 1
+                    single_det['total_detections'] = 1
+                    if 'status' not in single_det:
+                        single_det['status'] = 'confirmed'
+                    if 'saved_to_db' not in single_det:
+                        single_det['saved_to_db'] = False
+                    return single_det
+            
             if len(detections) < min_validations:
                 # No hay suficientes validaciones, esperar más detecciones
                 return None
@@ -1451,9 +1463,9 @@ class RealtimeLPRSystem:
                                 # self.logger.debug(f"[GROUP] Detección agregada al grupo {group_id}: {text} "
                                 #                f"(OCR: {ocr_conf:.2f}, Distancia: {estimated_distance:.1f}m)")
                                 
-                                # Si la confianza es muy alta, procesar inmediatamente sin esperar agrupación
-                                # Solo si cumple validación estricta y tiene alta confianza
-                                if ocr_conf >= 0.65 and is_valid_license_plate(text) and len(text) >= 5:
+                                # Si la confianza es alta, procesar inmediatamente sin esperar agrupación
+                                # Umbral reducido para procesamiento más rápido
+                                if ocr_conf >= 0.50 and is_valid_license_plate(text) and len(text) >= 5:
                                     # Procesar inmediatamente si la confianza es alta y formato válido
                                     try:
                                         # Actualizar estado en display antes de finalizar
@@ -1467,9 +1479,9 @@ class RealtimeLPRSystem:
                                     except Exception as e:
                                         self.logger.error(f"[ERROR] Error procesando inmediatamente: {e}")
             
-            # Limpiar grupos expirados y procesar los listos (más frecuente)
-            # Limpiar cada 3 frames para mejor balance
-            if self.ai_processed_frames % 3 == 0:
+            # Limpiar grupos expirados y procesar los listos (más frecuente para detección rápida)
+            # Limpiar cada frame para máxima velocidad
+            if self.ai_processed_frames % 1 == 0:
                 self.cleanup_expired_groups()
             
             return detections
