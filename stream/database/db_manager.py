@@ -109,6 +109,7 @@ class DatabaseManager:
         cursor.execute(create_detections)
         cursor.execute(create_vehicles)
         cursor.execute(create_access_log)
+<<<<<<< HEAD
         
         # Agregar columna estimated_distance_m si no existe (migración)
         try:
@@ -119,6 +120,8 @@ class DatabaseManager:
             # La columna ya existe o hay otro error, continuar
             pass
         
+=======
+>>>>>>> 95fc484 (Fixing_Files_Identical)
         self.connection.commit()
         print("📊 Tablas MySQL creadas")
     
@@ -140,6 +143,7 @@ class DatabaseManager:
             else:
                 vehicle_bbox = json.dumps(vehicle_bbox_json) if vehicle_bbox_json else None
             
+<<<<<<< HEAD
             # Verificar si la columna estimated_distance_m existe
             cursor.execute("SHOW COLUMNS FROM lpr_detections LIKE 'estimated_distance_m'")
             has_distance_column = cursor.fetchone() is not None
@@ -176,6 +180,23 @@ class DatabaseManager:
                     plate_bbox,
                     detection_data.get('camera_location', 'entrada_principal')
                 ))
+=======
+            cursor.execute('''
+                INSERT INTO lpr_detections 
+                (timestamp, plate_text, confidence, plate_score, vehicle_bbox, plate_bbox, 
+                 camera_location, estimated_distance_m)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ''', (
+                detection_data.get('timestamp'),
+                detection_data['plate_text'],
+                detection_data.get('confidence'),
+                detection_data.get('plate_score'),
+                vehicle_bbox,
+                plate_bbox,
+                detection_data.get('camera_location', 'entrada_principal'),
+                detection_data.get('estimated_distance_m')
+            ))
+>>>>>>> 95fc484 (Fixing_Files_Identical)
             
             self.connection.commit()
             return True
