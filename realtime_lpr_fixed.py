@@ -163,9 +163,10 @@ class RealtimeLPRSystem:
         
         # Sistema de agrupación inteligente de detecciones
         self.detection_groups = {}  # Agrupa detecciones similares por vehículo
-        self.group_timeout_sec = 0.3  # Tiempo reducido para procesar grupos más rápido (0.3s)
+        self.group_timeout_sec = 0.2  # Tiempo muy reducido para procesar grupos más rápido (0.2s)
         self.group_lock = threading.Lock()  # Lock para grupos de detecciones
         self.processing_groups = set()  # Grupos que están siendo procesados para evitar duplicados
+        self.active_detections = []  # Detecciones activas para mostrar inmediatamente
         
         # Detección de movimiento para activar IA
         self.motion_detector = cv2.createBackgroundSubtractorMOG2(detectShadows=False)
@@ -279,14 +280,15 @@ class RealtimeLPRSystem:
             },
             "realtime_optimization": {
                 "capture_target_fps": 30,      # FPS aumentado para más frames
-                "display_target_fps": 25,      # FPS de display aumentado
-                "ai_process_every": 1,         # IA CADA FRAME (máxima frecuencia para placas colombianas)
+                "display_target_fps": 30,      # FPS de display aumentado para fluidez
+                "ai_process_every": 3,         # IA cada 3 frames (balance velocidad/precisión)
                 "motion_activation": False,    # Desactivar detección de movimiento para procesar siempre
-                "display_scale": 0.5,          # Display más grande (50% del tamaño original)
+                "display_scale": 0.6,          # Display más grande para mejor visualización
                 "minimal_rendering": True,     
                 "fast_resize": True,           
                 "aggressive_cache": True,      # Cache más agresivo
-                "headless_mode": self.headless # Modo sin GUI
+                "headless_mode": self.headless, # Modo sin GUI
+                "skip_frame_processing": False # No saltar frames en display
             },
             "processing": {
                 "confidence_threshold": 0.40,  # Umbral aumentado para evitar falsos positivos
@@ -302,7 +304,7 @@ class RealtimeLPRSystem:
                 "min_plate_width_px": 40,        # Ancho mínimo reducido para detectar más lejos
                 "min_plate_height_px": 15,       # Altura mínima reducida para detectar más lejos
                 "distance_filter_enabled": True,  # Habilitar filtro de distancia pero con rango amplio
-                "detection_display_timeout_sec": 5.0,  # Tiempo aumentado para ver detecciones
+                "detection_display_timeout_sec": 10.0,  # Tiempo aumentado para ver detecciones más tiempo
                 "enhanced_detection_enabled": True,    # Habilitar detección mejorada con zoom
                 "freeze_frame_sec": 2.0,               # Tiempo para mejor estabilización
                 "enhanced_ocr_confidence_min": 0.70,   # Confianza mínima OCR aumentada para mejor precisión
@@ -752,16 +754,25 @@ class RealtimeLPRSystem:
                 cv2.putText(display_frame, "TIEMPO REAL", (5, new_h - 10), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
                 
-                # Limpiar detecciones expiradas (3 segundos)
+                # Limpiar detecciones expiradas (aumentado a 10 segundos para mejor visualización)
                 current_time_float = time.time()
-                timeout_sec = self.config["processing"].get("detection_display_timeout_sec", 3.0)
-                self.display_detections = [
-                    d for d in self.display_detections 
+                timeout_sec = self.config["processing"].get("detection_display_timeout_sec", 10.0)
+                
+                # Combinar display_detections y active_detections
+                all_detections = list(self.display_detections) + list(self.active_detections)
+                
+                # Limpiar expiradas
+                valid_detections = [
+                    d for d in all_detections 
                     if (current_time_float - d.get('display_time', 0)) < timeout_sec
                 ]
                 
-                # Mostrar solo detecciones no expiradas
-                for i, detection in enumerate(self.display_detections):
+                # Actualizar listas
+                self.display_detections = [d for d in valid_detections if d in self.display_detections]
+                self.active_detections = [d for d in valid_detections if d in self.active_detections]
+                
+                # Mostrar todas las detecciones válidas
+                for i, detection in enumerate(valid_detections):
                     bbox = detection['bbox']
                     x1, y1, x2, y2 = [int(coord * scale) for coord in bbox]
                     
@@ -1334,31 +1345,44 @@ class RealtimeLPRSystem:
                                 )
                                 self.add_detection_to_group(group_id, detection)
                                 
-                                # Agregar a detecciones para mostrar (con timestamp)
+                                # Agregar a detecciones para mostrar INMEDIATAMENTE (con timestamp)
                                 display_detection = detection.copy()
                                 display_detection['display_time'] = current_time_float
-                                self.display_detections.append(display_detection)
+                                display_detection['status'] = 'possible'  # Estado inicial
                                 
-                                # Mantener solo últimas 5 detecciones para display
-                                if len(self.display_detections) > 5:
-                                    self.display_detections = self.display_detections[-5:]
+                                # Agregar a ambas listas para asegurar visualización
+                                self.display_detections.append(display_detection)
+                                self.active_detections.append(display_detection)
+                                
+                                # Mantener solo últimas 10 detecciones para display
+                                if len(self.display_detections) > 10:
+                                    self.display_detections = self.display_detections[-10:]
+                                if len(self.active_detections) > 10:
+                                    self.active_detections = self.active_detections[-10:]
                                 
                                 self.logger.info(f"[GROUP] Detección agregada al grupo {group_id}: {text} "
                                                f"(OCR: {ocr_conf:.2f}, Distancia: {estimated_distance:.1f}m)")
                                 
                                 # Si la confianza es muy alta, procesar inmediatamente sin esperar agrupación
                                 # Solo si cumple validación estricta y tiene alta confianza
-                                if ocr_conf >= 0.70 and is_valid_license_plate(text) and len(text) >= 5:
-                                    # Procesar inmediatamente si la confianza es muy alta y formato válido
+                                if ocr_conf >= 0.65 and is_valid_license_plate(text) and len(text) >= 5:
+                                    # Procesar inmediatamente si la confianza es alta y formato válido
                                     self.logger.info(f"[FAST] Procesando inmediatamente placa de alta confianza: {text} (OCR: {ocr_conf:.2f})")
                                     try:
+                                        # Actualizar estado en display antes de finalizar
+                                        for det in self.display_detections:
+                                            if det.get('plate_text') == text and det.get('display_time') == current_time_float:
+                                                det['status'] = 'confirmed'
+                                        for det in self.active_detections:
+                                            if det.get('plate_text') == text and det.get('display_time') == current_time_float:
+                                                det['status'] = 'confirmed'
                                         self.finalize_detection(detection, frame, current_time)
                                     except Exception as e:
                                         self.logger.error(f"[ERROR] Error procesando inmediatamente: {e}")
             
             # Limpiar grupos expirados y procesar los listos (más frecuente)
-            # Solo limpiar cada 5 frames para no sobrecargar
-            if self.ai_processed_frames % 5 == 0:
+            # Limpiar cada 3 frames para mejor balance
+            if self.ai_processed_frames % 3 == 0:
                 self.cleanup_expired_groups()
             
             return detections
@@ -1749,7 +1773,7 @@ class RealtimeLPRSystem:
             if len(self.recent_detections) > 10:
                 self.recent_detections = self.recent_detections[-10:]
             
-            # Agregar a display con estado inicial
+            # Agregar a display con estado inicial - INMEDIATAMENTE
             display_detection = detection.copy()
             display_detection['display_time'] = time.time()
             # Asegurar que tiene los campos de estado
@@ -1757,9 +1781,16 @@ class RealtimeLPRSystem:
                 display_detection['status'] = 'confirmed'
             if 'saved_to_db' not in display_detection:
                 display_detection['saved_to_db'] = False
+            
+            # Agregar a ambas listas para asegurar visualización
             self.display_detections.append(display_detection)
-            if len(self.display_detections) > 5:
-                self.display_detections = self.display_detections[-5:]
+            self.active_detections.append(display_detection)
+            
+            # Mantener más detecciones para mejor visualización
+            if len(self.display_detections) > 10:
+                self.display_detections = self.display_detections[-10:]
+            if len(self.active_detections) > 10:
+                self.active_detections = self.active_detections[-10:]
             
             # Log final
             self.detections_count += 1
@@ -1788,14 +1819,14 @@ class RealtimeLPRSystem:
                     if saved:
                         detection['saved_to_db'] = True
                         detection['status'] = 'saved'
-                        # Actualizar también en display_detections - buscar por placa y tiempo reciente
+                        # Actualizar también en display_detections y active_detections - buscar por placa y tiempo reciente
                         current_time_now = time.time()
                         updated_count = 0
-                        for disp_det in self.display_detections:
+                        for disp_det in self.display_detections + self.active_detections:
                             if disp_det.get('plate_text') == plate_text:
-                                # Actualizar si es la misma placa y está dentro de 15 segundos
+                                # Actualizar si es la misma placa y está dentro de 30 segundos
                                 time_diff = abs(disp_det.get('display_time', 0) - current_time_now)
-                                if time_diff < 15.0:
+                                if time_diff < 30.0:
                                     disp_det['saved_to_db'] = True
                                     disp_det['status'] = 'saved'
                                     updated_count += 1
@@ -1809,8 +1840,11 @@ class RealtimeLPRSystem:
                             new_display_det['status'] = 'saved'
                             new_display_det['saved_to_db'] = True
                             self.display_detections.append(new_display_det)
-                            if len(self.display_detections) > 5:
-                                self.display_detections = self.display_detections[-5:]
+                            self.active_detections.append(new_display_det)
+                            if len(self.display_detections) > 10:
+                                self.display_detections = self.display_detections[-10:]
+                            if len(self.active_detections) > 10:
+                                self.active_detections = self.active_detections[-10:]
                             self.logger.info(f"[DB] ✅ Nueva entrada agregada al display: {plate_text} -> GUARDADA (VERDE)")
                         self.logger.info(f"[DB] ✅✅✅ VALIDACIÓN EXITOSA: Placa {plate_text} guardada correctamente en BD - CUADRO VERDE ACTIVADO")
                     else:
