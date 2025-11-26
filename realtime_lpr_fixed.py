@@ -331,10 +331,12 @@ class RealtimeLPRSystem:
         jetson_ip = self.config["jetson"]["ip"]
         
         try:
+            # Usar sudo con contraseña automática (proyecto)
+            sudo_password = "proyecto"
             commands = [
-                f"sudo ip addr flush dev {interface} 2>/dev/null || true",
-                f"sudo ip addr add {jetson_ip}/24 dev {interface} 2>/dev/null || true",
-                f"sudo ethtool -s {interface} speed 100 duplex full autoneg off 2>/dev/null || true"
+                f"echo '{sudo_password}' | sudo -S ip addr flush dev {interface} 2>/dev/null || true",
+                f"echo '{sudo_password}' | sudo -S ip addr add {jetson_ip}/24 dev {interface} 2>/dev/null || true",
+                f"echo '{sudo_password}' | sudo -S ethtool -s {interface} speed 100 duplex full autoneg off 2>/dev/null || true"
             ]
             
             for cmd in commands:

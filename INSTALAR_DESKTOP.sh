@@ -31,6 +31,19 @@ else
     exit 1
 fi
 
+# Configurar sudo (opcional)
+echo ""
+read -p "¿Configurar sudo para no pedir contraseña? (s/n): " -n 1 -r
+echo ""
+if [[ $REPLY =~ ^[Ss]$ ]]; then
+    if [ -f "$SCRIPT_DIR/configurar_sudo.sh" ]; then
+        chmod +x "$SCRIPT_DIR/configurar_sudo.sh"
+        "$SCRIPT_DIR/configurar_sudo.sh"
+    else
+        echo "⚠️  Script configurar_sudo.sh no encontrado"
+    fi
+fi
+
 # Actualizar base de datos de aplicaciones
 if command -v update-desktop-database &> /dev/null; then
     update-desktop-database "$HOME/.local/share/applications" 2>/dev/null

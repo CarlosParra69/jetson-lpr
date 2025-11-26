@@ -50,6 +50,19 @@ mkdir -p logs
 mkdir -p results
 mkdir -p config
 
+# Configurar sudoers para no pedir contraseña (opcional, solo si es necesario)
+# Esto permite usar sudo sin contraseña para comandos de red específicos
+SUDOERS_FILE="/etc/sudoers.d/jetson-lpr"
+if [ ! -f "$SUDOERS_FILE" ]; then
+    echo -e "${YELLOW}🔐 Configurando permisos sudo (puede pedir contraseña una vez)...${NC}"
+    echo "proyecto" | sudo -S bash -c "echo '$USER ALL=(ALL) NOPASSWD: /sbin/ip, /sbin/ethtool' > $SUDOERS_FILE 2>/dev/null" 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✅ Permisos sudo configurados${NC}"
+    else
+        echo -e "${YELLOW}⚠️  No se pudieron configurar permisos sudo (se usará contraseña automática)${NC}"
+    fi
+fi
+
 echo -e "${GREEN}✅ Todo listo${NC}"
 echo -e "${GREEN}🚀 Iniciando sistema LPR...${NC}"
 echo ""
