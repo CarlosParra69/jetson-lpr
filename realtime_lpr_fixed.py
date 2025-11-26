@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-⚡ SISTEMA LPR ULTRA-OPTIMIZADO TIEMPO REAL
-==========================================
-Versión modificada para detección casi instantánea de placas
+SISTEMA LPR TIEMPO REAL - VERSIÓN CORREGIDA
+================================================================
+Versión modificada para resolución de problemas Unicode y modo headless
 
 Optimizaciones para tiempo real:
 - IA cada 2-3 frames máximo
@@ -10,9 +10,11 @@ Optimizaciones para tiempo real:
 - Detección de movimiento para activar IA
 - Cache agresivo
 - Prioridad a detección sobre FPS
+- Logging UTF-8 compatible
+- Modo headless (sin GUI) para Jetson
 
 Autor: Sistema LPR automatizado - Versión Tiempo Real
-Fecha: 2025-06-29
+Fecha: 2025-11-11
 """
 
 import cv2
@@ -39,6 +41,24 @@ try:
 except ImportError as e:
     print(f"❌ Error importando módulos: {e}")
     exit(1)
+
+# Intentar importar gestor de base de datos
+try:
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent / "stream" / "database"))
+    from db_manager import DatabaseManager
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
+    print("⚠️  Gestor de base de datos no disponible - continuando sin BD")
+
+# Intentar importar controlador PTZ
+try:
+    from ptz_controller import PTZController
+    PTZ_AVAILABLE = True
+except ImportError:
+    PTZ_AVAILABLE = False
+    print("⚠️  Controlador PTZ no disponible - continuando sin control PTZ")
 
 def is_valid_license_plate(text):
     """Validar si el texto corresponde a una placa válida"""
@@ -76,10 +96,11 @@ def is_valid_license_plate(text):
     return False
 
 class RealtimeLPRSystem:
-    """Sistema LPR optimizado para tiempo real"""
+    """Sistema LPR optimizado para tiempo real - Versión corregida"""
     
-    def __init__(self, config_path="config/ptz_config.json"):
+    def __init__(self, config_path="config/ptz_config.json", headless=True):
         self.config_path = Path(config_path)
+        self.headless = headless
         self.setup_logging()
         self.load_realtime_config()
         
@@ -103,15 +124,18 @@ class RealtimeLPRSystem:
         
         # Cache y optimizaciones tiempo real
         self.ocr_cache = {}
-        self.detection_cooldown = {}
-        self.recent_detections = []
+        self.detection_cooldown = {}  # Cooldown por texto de placa
+        self.bbox_cooldown = {}  # Cooldown por ubicación (bbox)
+        self.recent_detections = []  # Detecciones recientes con timestamp
+        self.recent_plate_variations = {}  # Para detectar variaciones incorrectas del OCR
+        self.display_detections = []  # Detecciones para mostrar (con expiración)
         
         # Detección de movimiento para activar IA
         self.motion_detector = cv2.createBackgroundSubtractorMOG2(detectShadows=False)
         self.last_motion_time = 0
         self.motion_threshold = 1000  # Píxeles en movimiento
         
-        # Display optimizado
+        # Display optimizado (solo si no es headless)
         self.window_created = False
         self.last_frame = None
         
@@ -121,29 +145,78 @@ class RealtimeLPRSystem:
         # Configurar red PTZ
         self.setup_network()
         
+        # Configurar base de datos
+        self.db_manager = None
+        self.setup_database()
+        
+        # Configurar control PTZ
+        self.ptz_controller = None
+        self.setup_ptz()
+        
         # Directorios
         self.results_dir = Path("results")
         self.results_dir.mkdir(exist_ok=True)
         
-        self.logger.info("⚡ Sistema LPR TIEMPO REAL inicializado")
+        self.logger.info("✅ Sistema LPR TIEMPO REAL inicializado")
     
     def setup_logging(self):
-        """Configurar logging"""
+        """Configurar logging con UTF-8 encoding"""
         log_dir = Path("logs")
         log_dir.mkdir(exist_ok=True)
         
         log_file = log_dir / f"realtime_lpr_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
         
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - REALTIME-LPR - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(log_file),
-                logging.StreamHandler()
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
-        print(f"📝 Logs guardados en: {log_file}")
+        # Configurar logging con UTF-8 para Unicode
+        logger = logging.getLogger(__name__)
+        logger.setLevel(logging.INFO)
+        
+        # Handler para archivo con UTF-8
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setLevel(logging.INFO)
+        
+        # Handler para consola con manejo de Unicode
+        class SafeStreamHandler(logging.StreamHandler):
+            def emit(self, record):
+                try:
+                    msg = self.format(record)
+                    if hasattr(sys.stdout, 'encoding') and sys.stdout.encoding.lower() in ['cp1252', 'latin-1']:
+                        # En Windows, convertir emojis a texto simple
+                        emoji_map = {
+                            '✅': '[OK]',
+                            '❌': '[ERROR]',
+                            '⚡': '[FAST]',
+                            '📹': '[VIDEO]',
+                            '🖥️': '[DISPLAY]',
+                            '🧠': '[AI]',
+                            '🎮': '[CONTROL]',
+                            '📝': '[LOG]',
+                            '🤖': '[ROBOT]',
+                            '📦': '[MODEL]',
+                            '🛑': '[STOP]',
+                            '📊': '[STATS]',
+                            '⏱️': '[TIME]',
+                            '🎯': '[TARGET]',
+                            '📹': '[FPS]'
+                        }
+                        for emoji, replacement in emoji_map.items():
+                            msg = msg.replace(emoji, replacement)
+                    self.stream.write(msg + self.terminator)
+                except Exception:
+                    pass
+        
+        console_handler = SafeStreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        
+        # Formato sin emojis
+        formatter = logging.Formatter('%(asctime)s - REALTIME-LPR - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
+        
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+        
+        self.logger = logger
+        print(f"✅ Logs guardados en: {log_file}")
     
     def load_realtime_config(self):
         """Cargar configuración optimizada para tiempo real"""
@@ -172,25 +245,51 @@ class RealtimeLPRSystem:
                 "display_target_fps": 20,      # Más FPS de display  
                 "ai_process_every": 2,         # IA CADA 2 FRAMES (ultra-frecuente)
                 "motion_activation": True,     # Activar IA solo con movimiento
-                "display_scale": 0.25,         # Display más pequeño para más FPS
+                "display_scale": 0.5,          # Display más grande (50% del tamaño original)
                 "minimal_rendering": True,     
                 "fast_resize": True,           
-                "aggressive_cache": True       # Cache más agresivo
+                "aggressive_cache": True,      # Cache más agresivo
+                "headless_mode": self.headless # Modo sin GUI
             },
             "processing": {
                 "confidence_threshold": 0.30,  # Umbral más bajo para no perder detecciones
-                "plate_confidence_min": 0.25,  # OCR más permisivo
+                "plate_confidence_min": 0.40,  # OCR más estricto para evitar errores
                 "max_detections": 3,
                 "ocr_cache_enabled": True,
-                "detection_cooldown_sec": 0.5,  # COOLDOWN MUY CORTO (0.5s)
-                "motion_cooldown_sec": 2        # Cooldown para detección de movimiento
+                "detection_cooldown_sec": 3.0,  # Cooldown aumentado para evitar duplicados
+                "bbox_cooldown_sec": 2.0,       # Cooldown por ubicación
+                "motion_cooldown_sec": 2,       # Cooldown para detección de movimiento
+                "similarity_threshold": 0.7,    # Umbral para detectar variaciones similares
+                "max_plate_variations": 3,      # Máximo de variaciones a considerar
+                "max_detection_distance_m": 8.0,  # Distancia máxima de detección en metros (aumentada)
+                "min_plate_width_px": 60,        # Ancho mínimo de placa en píxeles (reducido para más alcance)
+                "min_plate_height_px": 25,       # Altura mínima de placa en píxeles (reducido para más alcance)
+                "distance_filter_enabled": True,  # Habilitar filtro de distancia
+                "detection_display_timeout_sec": 3.0  # Tiempo antes de borrar cuadros de detección
+            },
+            "database": {
+                "enabled": True,
+                "type": "mysql",
+                "host": "localhost",
+                "port": 3306,
+                "database": "parqueadero_jetson",
+                "user": "lpr_user",
+                "password": "lpr_password",
+                "charset": "utf8mb4"
+            },
+            "ptz": {
+                "enabled": True,
+                "auto_focus": True,  # Enfocar automáticamente en placas detectadas
+                "zoom_level": 0.7,  # Nivel de zoom al detectar placa (0.0 a 1.0)
+                "restore_after_sec": 3.0,  # Segundos antes de restaurar posición
+                "movement_speed": 0.6  # Velocidad de movimiento (0.0 a 1.0)
             },
             "output": {
                 "save_results": True,
                 "save_images": False,           
-                "show_video": True,
-                "show_minimal_overlay": True,   
-                "window_title": "Tiempo Real LPR ⚡⚡"
+                "show_video": not self.headless,
+                "show_minimal_overlay": not self.headless,   
+                "window_title": "Tiempo Real LPR - Jetson Optimized"
             }
         }
         
@@ -226,14 +325,60 @@ class RealtimeLPRSystem:
             for cmd in commands:
                 subprocess.run(cmd, shell=True, capture_output=True)
             
-            self.logger.info(f"✅ Red tiempo real: {interface} -> {jetson_ip}")
+            self.logger.info(f"[OK] Red tiempo real: {interface} -> {jetson_ip}")
             
         except Exception as e:
-            self.logger.warning(f"⚠️ Configuración de red: {e}")
+            self.logger.warning(f"[WARN] Configuración de red: {e}")
+    
+    def setup_database(self):
+        """Configurar conexión a base de datos"""
+        if not DB_AVAILABLE:
+            self.logger.warning("[WARN] Gestor de BD no disponible - continuando sin BD")
+            return
+        
+        if not self.config.get("database", {}).get("enabled", False):
+            self.logger.info("[INFO] Base de datos deshabilitada en configuración")
+            return
+        
+        try:
+            db_config = self.config["database"].copy()
+            db_config.pop("enabled", None)
+            
+            self.db_manager = DatabaseManager(db_config)
+            self.logger.info("[OK] Base de datos MySQL conectada")
+            
+        except Exception as e:
+            self.logger.warning(f"[WARN] No se pudo conectar a MySQL: {e}")
+            self.logger.info("[INFO] Continuando sin base de datos")
+            self.db_manager = None
+    
+    def setup_ptz(self):
+        """Configurar control PTZ"""
+        if not PTZ_AVAILABLE:
+            self.logger.warning("[WARN] Controlador PTZ no disponible - continuando sin PTZ")
+            return
+        
+        if not self.config.get("ptz", {}).get("enabled", False):
+            self.logger.info("[INFO] Control PTZ deshabilitado en configuración")
+            return
+        
+        try:
+            camera_config = self.config["camera"]
+            self.ptz_controller = PTZController(
+                camera_ip=camera_config["ip"],
+                username=camera_config["user"],
+                password=camera_config["password"]
+            )
+            self.logger.info("[OK] Controlador PTZ inicializado")
+            
+        except Exception as e:
+            self.logger.warning(f"[WARN] No se pudo inicializar control PTZ: {e}")
+            self.logger.info("[INFO] Continuando sin control PTZ")
+            self.ptz_controller = None
     
     def setup_models(self):
         """Inicializar modelos de IA"""
-        self.logger.info("🤖 Cargando modelos de IA...")
+        self.logger.info("[ROBOT] Cargando modelos de IA...")
         
         try:
             # Modelo YOLO
@@ -252,7 +397,7 @@ class RealtimeLPRSystem:
             if not selected_model:
                 selected_model = str(model_files[0])
             
-            self.logger.info(f"📦 Cargando modelo: {selected_model}")
+            self.logger.info(f"[MODEL] Cargando modelo: {selected_model}")
             self.yolo_model = YOLO(selected_model)
             
             # Warm-up más agresivo
@@ -261,7 +406,7 @@ class RealtimeLPRSystem:
                 self.yolo_model(dummy_frame, verbose=False)
             
             # EasyOCR
-            self.logger.info("📝 Inicializando EasyOCR...")
+            self.logger.info("[LOG] Inicializando EasyOCR...")
             self.ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False, detector='dbnet18')
             
             # Warm-up OCR
@@ -269,10 +414,10 @@ class RealtimeLPRSystem:
             for _ in range(2):
                 self.ocr_reader.readtext(dummy_roi)
             
-            self.logger.info("✅ Modelos listos para TIEMPO REAL")
+            self.logger.info("[OK] Modelos listos para TIEMPO REAL")
             
         except Exception as e:
-            self.logger.error(f"❌ Error cargando modelos: {e}")
+            self.logger.error(f"[ERROR] Error cargando modelos: {e}")
             raise
     
     def detect_motion(self, frame):
@@ -298,7 +443,7 @@ class RealtimeLPRSystem:
     
     def capture_worker(self):
         """Thread de captura optimizado para tiempo real"""
-        self.logger.info("📹 Iniciando captura TIEMPO REAL...")
+        self.logger.info("[VIDEO] Iniciando captura TIEMPO REAL...")
         
         rtsp_url = self.config["camera"]["rtsp_url"]
         
@@ -306,8 +451,10 @@ class RealtimeLPRSystem:
             cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             cap.set(cv2.CAP_PROP_FPS, self.config["realtime_optimization"]["capture_target_fps"])
+            # Mejorar manejo de errores de decodificación H264
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'H264'))
             
-            self.logger.info("✅ Captura TIEMPO REAL conectada")
+            self.logger.info("[OK] Captura TIEMPO REAL conectada")
             
             while self.running:
                 ret, frame = cap.read()
@@ -340,15 +487,36 @@ class RealtimeLPRSystem:
             cap.release()
             
         except Exception as e:
-            self.logger.error(f"❌ Error en captura: {e}")
+            self.logger.error(f"[ERROR] Error en captura: {e}")
     
     def display_worker(self):
         """Thread de display optimizado"""
-        self.logger.info("🖥️ Iniciando display TIEMPO REAL...")
+        if self.headless:
+            # Modo headless - solo procesar pero no mostrar
+            self.logger.info("[DISPLAY] Modo HEADLESS activado - Sin GUI")
+            while self.running:
+                try:
+                    frame = self.display_queue.get(timeout=0.1)
+                    self.display_frame_count += 1
+                    # Procesar overlay pero no mostrar
+                    self.process_overlay_headless(frame)
+                    
+                except queue.Empty:
+                    continue
+            return
+        
+        self.logger.info("[DISPLAY] Iniciando display TIEMPO REAL...")
         
         window_title = self.config["output"]["window_title"]
-        cv2.namedWindow(window_title, cv2.WINDOW_AUTOSIZE)
-        self.window_created = True
+        try:
+            cv2.namedWindow(window_title, cv2.WINDOW_AUTOSIZE)
+            self.window_created = True
+        except Exception as e:
+            self.logger.warning(f"[WARN] No se puede crear ventana GUI: {e}")
+            self.logger.info("[DISPLAY] Activando modo HEADLESS automáticamente")
+            self.headless = True
+            self.display_worker()  # Llamar recursivamente en modo headless
+            return
         
         try:
             while self.running:
@@ -379,11 +547,17 @@ class RealtimeLPRSystem:
             cv2.destroyAllWindows()
             
         except Exception as e:
-            self.logger.error(f"❌ Error en display: {e}")
+            self.logger.error(f"[ERROR] Error en display: {e}")
+    
+    def process_overlay_headless(self, frame):
+        """Procesar overlay en modo headless"""
+        # Procesar detecciones sin mostrar GUI
+        # Esto mantiene el buffer actualizado para el procesamiento de IA
+        pass
     
     def ai_worker(self):
         """Thread de IA para tiempo real"""
-        self.logger.info("🧠 Iniciando IA TIEMPO REAL...")
+        self.logger.info("[AI] Iniciando IA TIEMPO REAL...")
         
         try:
             while self.running:
@@ -407,10 +581,13 @@ class RealtimeLPRSystem:
                     continue
                     
         except Exception as e:
-            self.logger.error(f"❌ Error en IA: {e}")
+            self.logger.error(f"[ERROR] Error en IA: {e}")
     
     def realtime_overlay(self, frame):
         """Overlay mínimo para tiempo real"""
+        if self.headless:
+            return frame
+            
         # Resize ultra-rápido
         scale = self.config["realtime_optimization"]["display_scale"]
         h, w = frame.shape[:2]
@@ -434,13 +611,31 @@ class RealtimeLPRSystem:
                 cv2.putText(display_frame, "TIEMPO REAL", (5, new_h - 10), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
                 
-                # Detecciones recientes con timestamp
-                for i, detection in enumerate(self.recent_detections[-2:]):
+                # Limpiar detecciones expiradas (3 segundos)
+                current_time_float = time.time()
+                timeout_sec = self.config["processing"].get("detection_display_timeout_sec", 3.0)
+                self.display_detections = [
+                    d for d in self.display_detections 
+                    if (current_time_float - d.get('display_time', 0)) < timeout_sec
+                ]
+                
+                # Mostrar solo detecciones no expiradas
+                for i, detection in enumerate(self.display_detections):
                     bbox = detection['bbox']
                     x1, y1, x2, y2 = [int(coord * scale) for coord in bbox]
                     
-                    # Rectángulo
-                    color = (0, 255, 0) if i == len(self.recent_detections) - 1 else (0, 255, 255)
+                    # Calcular tiempo restante para desvanecer
+                    elapsed = current_time_float - detection.get('display_time', 0)
+                    time_remaining = timeout_sec - elapsed
+                    
+                    # Color verde para la más reciente, amarillo para otras
+                    if i == len(self.display_detections) - 1:
+                        color = (0, 255, 0)  # Verde
+                    else:
+                        # Desvanecer a amarillo según tiempo
+                        alpha = max(0.3, time_remaining / timeout_sec)
+                        color = (0, int(255 * alpha), 255)  # Amarillo que se desvanece
+                    
                     cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
                     
                     # Texto de la placa
@@ -450,8 +645,141 @@ class RealtimeLPRSystem:
         
         return display_frame
     
+    def calculate_bbox_hash(self, x1, y1, x2, y2):
+        """Calcular hash de bbox para cooldown por ubicación"""
+        # Redondear a múltiplos de 20 para agrupar bboxes similares
+        x1_rounded = (x1 // 20) * 20
+        y1_rounded = (y1 // 20) * 20
+        x2_rounded = (x2 // 20) * 20
+        y2_rounded = (y2 // 20) * 20
+        return f"{x1_rounded}_{y1_rounded}_{x2_rounded}_{y2_rounded}"
+    
+    def estimate_distance_from_bbox(self, bbox, frame_width, frame_height):
+        """
+        Estimar distancia de la placa basándose en el tamaño del bbox
+        Retorna distancia estimada en metros
+        """
+        x1, y1, x2, y2 = bbox
+        plate_width = x2 - x1
+        plate_height = y2 - y1
+        
+        # Tamaño promedio de una placa real: ~52cm x 11cm
+        # Usar el ancho como referencia principal (más estable)
+        real_plate_width_cm = 52.0  # cm
+        real_plate_height_cm = 11.0  # cm
+        
+        # Calcular área de la placa en píxeles
+        plate_area_px = plate_width * plate_height
+        
+        # Calcular área del frame
+        frame_area_px = frame_width * frame_height
+        
+        # Proporción de la placa respecto al frame
+        plate_ratio = plate_area_px / frame_area_px if frame_area_px > 0 else 0
+        
+        # Estimar distancia usando modelo simplificado:
+        # Distancia inversamente proporcional al tamaño aparente
+        # Asumimos que una placa de 80px de ancho está a ~5 metros
+        # (esto se puede calibrar según la cámara)
+        
+        # Calibración: placa de 80px de ancho = 5 metros
+        reference_width_px = 80
+        reference_distance_m = 5.0
+        
+        if plate_width < 20:  # Muy pequeña, probablemente muy lejos
+            return 20.0  # Retornar distancia grande
+        
+        # Estimar distancia usando relación inversa
+        # d = d_ref * (w_ref / w_actual)
+        estimated_distance = reference_distance_m * (reference_width_px / plate_width)
+        
+        return estimated_distance
+    
+    def is_within_detection_range(self, bbox, frame_width, frame_height):
+        """
+        Verificar si la placa está dentro del rango de detección permitido
+        Retorna (bool, distancia_estimada)
+        """
+        if not self.config["processing"].get("distance_filter_enabled", True):
+            return True, 0.0
+        
+        # Verificar tamaño mínimo de placa (filtro rápido)
+        x1, y1, x2, y2 = bbox
+        plate_width = x2 - x1
+        plate_height = y2 - y1
+        
+        min_width = self.config["processing"].get("min_plate_width_px", 80)
+        min_height = self.config["processing"].get("min_plate_height_px", 30)
+        
+        # Si la placa es muy pequeña, está fuera de rango
+        if plate_width < min_width or plate_height < min_height:
+            estimated_dist = self.estimate_distance_from_bbox(bbox, frame_width, frame_height)
+            return False, estimated_dist
+        
+        # Estimar distancia
+        estimated_distance = self.estimate_distance_from_bbox(bbox, frame_width, frame_height)
+        
+        # Verificar si está dentro del rango máximo
+        max_distance = self.config["processing"].get("max_detection_distance_m", 5.0)
+        
+        is_within_range = estimated_distance <= max_distance
+        
+        return is_within_range, estimated_distance
+    
+    def calculate_text_similarity(self, text1, text2):
+        """Calcular similitud entre dos textos de placa"""
+        if not text1 or not text2:
+            return 0.0
+        
+        # Normalizar textos
+        t1 = re.sub(r'[^A-Z0-9]', '', text1.upper())
+        t2 = re.sub(r'[^A-Z0-9]', '', text2.upper())
+        
+        if len(t1) == 0 or len(t2) == 0:
+            return 0.0
+        
+        # Calcular similitud de caracteres
+        matches = sum(1 for a, b in zip(t1, t2) if a == b)
+        max_len = max(len(t1), len(t2))
+        
+        return matches / max_len if max_len > 0 else 0.0
+    
+    def is_similar_to_recent_detection(self, text, bbox):
+        """Verificar si la detección es similar a una reciente (evitar variaciones OCR)"""
+        similarity_threshold = self.config["processing"]["similarity_threshold"]
+        
+        # Revisar detecciones recientes (últimas 10)
+        for recent in self.recent_detections[-10:]:
+            recent_text = recent.get('plate_text', '')
+            recent_bbox = recent.get('bbox', [])
+            
+            # Verificar similitud de texto
+            similarity = self.calculate_text_similarity(text, recent_text)
+            
+            if similarity >= similarity_threshold:
+                # Verificar si el bbox está cerca (misma ubicación)
+                if recent_bbox:
+                    rx1, ry1, rx2, ry2 = recent_bbox
+                    x1, y1, x2, y2 = bbox
+                    
+                    # Calcular distancia entre centros
+                    center_x = (x1 + x2) / 2
+                    center_y = (y1 + y2) / 2
+                    r_center_x = (rx1 + rx2) / 2
+                    r_center_y = (ry1 + ry2) / 2
+                    
+                    distance = ((center_x - r_center_x) ** 2 + (center_y - r_center_y) ** 2) ** 0.5
+                    
+                    # Si está cerca y es similar, probablemente es la misma placa con OCR incorrecto
+                    if distance < 100:  # 100 píxeles de tolerancia
+                        # Preferir la detección con mayor confianza
+                        if similarity > 0.8:  # Muy similar
+                            return True, recent_text
+        
+        return False, None
+    
     def process_frame_ai_realtime(self, frame, frame_time):
-        """Procesamiento IA optimizado para tiempo real"""
+        """Procesamiento IA optimizado para tiempo real con cooldown inteligente"""
         try:
             self.ai_processed_frames += 1
             
@@ -462,6 +790,7 @@ class RealtimeLPRSystem:
             
             detections = []
             current_time = datetime.now()
+            current_time_float = time.time()
             
             for result in results:
                 boxes = result.boxes
@@ -470,6 +799,7 @@ class RealtimeLPRSystem:
                         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                         confidence = float(box.conf[0].cpu().numpy())
                         
+                        # Umbral de confianza más estricto
                         if confidence < self.config["processing"]["plate_confidence_min"]:
                             continue
                         
@@ -479,53 +809,144 @@ class RealtimeLPRSystem:
                         y2 = min(frame.shape[0], y2)
                         
                         if x2 > x1 and y2 > y1:
+                            # Filtrar por distancia/rango de detección
+                            frame_height, frame_width = frame.shape[:2]
+                            is_within_range, estimated_distance = self.is_within_detection_range(
+                                [x1, y1, x2, y2], frame_width, frame_height
+                            )
+                            
+                            if not is_within_range:
+                                self.logger.debug(f"[FILTER] Placa rechazada por distancia: {estimated_distance:.1f}m "
+                                                 f"(máximo: {self.config['processing'].get('max_detection_distance_m', 5.0)}m)")
+                                continue  # Fuera del rango permitido
+                            
+                            # Cooldown por ubicación (bbox)
+                            bbox_hash = self.calculate_bbox_hash(x1, y1, x2, y2)
+                            bbox_cooldown_sec = self.config["processing"]["bbox_cooldown_sec"]
+                            
+                            if bbox_hash in self.bbox_cooldown:
+                                last_bbox_time = self.bbox_cooldown[bbox_hash]
+                                if (current_time_float - last_bbox_time) < bbox_cooldown_sec:
+                                    continue  # Esta ubicación fue detectada recientemente
+                            
                             roi = frame[y1:y2, x1:x2]
                             
-                            # OCR con cache ULTRA-agresivo
+                            # OCR con cache
                             plate_texts = self.get_plate_text_cached_realtime(roi)
                             
                             for plate_text in plate_texts:
                                 text = plate_text['text']
+                                ocr_conf = plate_text['confidence']
                                 
-                                if is_valid_license_plate(text):
-                                    # Cooldown MUY CORTO
-                                    cooldown_sec = self.config["processing"]["detection_cooldown_sec"]
-                                    if text in self.detection_cooldown:
-                                        last_time = self.detection_cooldown[text]
-                                        if (current_time - last_time).total_seconds() < cooldown_sec:
-                                            continue
-                                    
-                                    self.detection_cooldown[text] = current_time
-                                    
-                                    # Calcular latencia real
-                                    processing_latency = time.time() - frame_time
-                                    
-                                    detection = {
-                                        'timestamp': current_time.isoformat(),
-                                        'frame_number': self.capture_frame_count,
-                                        'ai_frame_number': self.ai_processed_frames,
-                                        'plate_text': text,
-                                        'yolo_confidence': confidence,
-                                        'ocr_confidence': plate_text['confidence'],
-                                        'bbox': [x1, y1, x2, y2],
-                                        'processing_latency_ms': int(processing_latency * 1000),
-                                        'valid': True
-                                    }
-                                    
-                                    detections.append(detection)
-                                    self.detections_count += 1
-                                    
-                                    self.logger.info(f"🎯 PLACA: {text} "
-                                                   f"(YOLO: {confidence:.2f}, OCR: {plate_text['confidence']:.2f}, "
-                                                   f"Latencia: {int(processing_latency * 1000)}ms)")
-                                    
-                                    if self.config["output"]["save_results"]:
-                                        self.save_detection(detection)
+                                # Validar formato de placa
+                                if not is_valid_license_plate(text):
+                                    continue
+                                
+                                # Validación adicional: rechazar placas con confianza OCR muy baja
+                                if ocr_conf < 0.50:  # Aumentar umbral mínimo de OCR
+                                    self.logger.debug(f"[FILTER] Placa rechazada por baja confianza OCR: {text} ({ocr_conf:.2f})")
+                                    continue
+                                
+                                # Verificar si es similar a una detección reciente (evitar variaciones OCR)
+                                is_similar, better_text = self.is_similar_to_recent_detection(text, [x1, y1, x2, y2])
+                                
+                                if is_similar and better_text:
+                                    # Si hay una detección similar reciente con mayor confianza, usar esa
+                                    # Pero solo si la diferencia de confianza es significativa
+                                    recent_det = next((d for d in self.recent_detections if d.get('plate_text') == better_text), None)
+                                    if recent_det and recent_det.get('ocr_confidence', 0) > ocr_conf + 0.15:
+                                        self.logger.debug(f"[FILTER] Usando detección previa más confiable: {better_text}")
+                                        continue  # Ignorar esta detección, usar la anterior
+                                
+                                # Cooldown por texto de placa
+                                cooldown_sec = self.config["processing"]["detection_cooldown_sec"]
+                                if text in self.detection_cooldown:
+                                    last_time = self.detection_cooldown[text]
+                                    if (current_time_float - last_time) < cooldown_sec:
+                                        continue  # Esta placa fue detectada recientemente
+                                
+                                # Actualizar cooldowns
+                                self.detection_cooldown[text] = current_time_float
+                                self.bbox_cooldown[bbox_hash] = current_time_float
+                                
+                                # Limpiar cooldowns antiguos (más de 1 minuto)
+                                self.cleanup_old_cooldowns()
+                                
+                                # Calcular latencia real
+                                processing_latency = time.time() - frame_time
+                                
+                                detection = {
+                                    'timestamp': current_time.isoformat(),
+                                    'frame_number': self.capture_frame_count,
+                                    'ai_frame_number': self.ai_processed_frames,
+                                    'plate_text': text,
+                                    'yolo_confidence': confidence,
+                                    'ocr_confidence': ocr_conf,
+                                    'bbox': [x1, y1, x2, y2],
+                                    'estimated_distance_m': round(estimated_distance, 2),
+                                    'processing_latency_ms': int(processing_latency * 1000),
+                                    'valid': True
+                                }
+                                
+                                detections.append(detection)
+                                self.detections_count += 1
+                                
+                                # Agregar a detecciones para mostrar (con timestamp)
+                                display_detection = detection.copy()
+                                display_detection['display_time'] = current_time_float
+                                self.display_detections.append(display_detection)
+                                
+                                # Mantener solo últimas 5 detecciones para display
+                                if len(self.display_detections) > 5:
+                                    self.display_detections = self.display_detections[-5:]
+                                
+                                self.logger.info(f"[TARGET] PLACA: {text} "
+                                               f"(YOLO: {confidence:.2f}, OCR: {ocr_conf:.2f}, "
+                                               f"Distancia: {estimated_distance:.1f}m, "
+                                               f"Latencia: {int(processing_latency * 1000)}ms)")
+                                
+                                # Control PTZ: Enfocar automáticamente en la placa
+                                if self.ptz_controller and self.config.get("ptz", {}).get("auto_focus", False):
+                                    try:
+                                        frame_height, frame_width = frame.shape[:2]
+                                        zoom_level = self.config["ptz"].get("zoom_level", 0.7)
+                                        restore_after = self.config["ptz"].get("restore_after_sec", 3.0)
+                                        
+                                        self.ptz_controller.focus_on_plate(
+                                            bbox=[x1, y1, x2, y2],
+                                            frame_width=frame_width,
+                                            frame_height=frame_height,
+                                            zoom_level=zoom_level,
+                                            restore_after=restore_after
+                                        )
+                                        self.logger.info(f"[PTZ] Enfoque automático activado para placa {text}")
+                                    except Exception as e:
+                                        self.logger.warning(f"[WARN] Error en control PTZ: {e}")
+                                
+                                # Guardar en base de datos
+                                if self.db_manager:
+                                    try:
+                                        db_data = {
+                                            'timestamp': current_time,
+                                            'plate_text': text,
+                                            'confidence': confidence,
+                                            'plate_score': ocr_conf,
+                                            'vehicle_bbox': None,
+                                            'plate_bbox': json.dumps([x1, y1, x2, y2]),
+                                            'camera_location': 'entrada_principal'
+                                        }
+                                        self.db_manager.insert_detection(db_data)
+                                    except Exception as e:
+                                        self.logger.warning(f"[WARN] Error guardando en BD: {e}")
+                                
+                                # Guardar en archivo
+                                if self.config["output"]["save_results"]:
+                                    self.save_detection(detection)
             
             return detections
             
         except Exception as e:
-            self.logger.warning(f"⚠️ Error en IA: {e}")
+            self.logger.warning(f"[WARN] Error en IA: {e}")
             return []
     
     def get_plate_text_cached_realtime(self, roi):
@@ -588,7 +1009,8 @@ class RealtimeLPRSystem:
             
             texts = []
             for (bbox, text, confidence) in ocr_results:
-                if confidence > 0.2 and len(text.strip()) > 2:  # Umbral más bajo
+                # Umbral de confianza más estricto para evitar errores OCR
+                if confidence >= self.config["processing"]["plate_confidence_min"] and len(text.strip()) > 2:
                     cleaned_text = re.sub(r'[^A-Z0-9]', '', text.upper())
                     if len(cleaned_text) >= 3:
                         texts.append({
@@ -611,7 +1033,7 @@ class RealtimeLPRSystem:
                 f.write('\n')
                 
         except Exception as e:
-            self.logger.error(f"❌ Error guardando: {e}")
+            self.logger.error(f"[ERROR] Error guardando: {e}")
     
     def reset_stats(self):
         """Reset estadísticas"""
@@ -621,23 +1043,42 @@ class RealtimeLPRSystem:
         self.detections_count = 0
         self.recent_detections = []
         self.start_time = time.time()
-        self.logger.info("🔄 Reset TIEMPO REAL")
+        self.logger.info("[RESET] Reset TIEMPO REAL")
+    
+    def cleanup_old_cooldowns(self):
+        """Limpiar cooldowns antiguos para liberar memoria"""
+        current_time_float = time.time()
+        
+        # Limpiar cooldowns de texto (más de 1 minuto)
+        old_texts = [text for text, last_time in self.detection_cooldown.items() 
+                    if (current_time_float - last_time) > 60]
+        for text in old_texts:
+            del self.detection_cooldown[text]
+        
+        # Limpiar cooldowns de bbox (más de 1 minuto)
+        old_bboxes = [bbox_hash for bbox_hash, last_time in self.bbox_cooldown.items() 
+                     if (current_time_float - last_time) > 60]
+        for bbox_hash in old_bboxes:
+            del self.bbox_cooldown[bbox_hash]
     
     def clear_cache(self):
         """Limpiar cache"""
         self.ocr_cache.clear()
         self.detection_cooldown.clear()
-        self.logger.info("🧹 Cache limpiado")
+        self.bbox_cooldown.clear()
+        self.recent_detections.clear()
+        self.display_detections.clear()
+        self.logger.info("[CLEAR] Cache limpiado")
     
     def save_screenshot(self, frame):
         """Guardar captura"""
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         cv2.imwrite(f"realtime_capture_{timestamp}.jpg", frame)
-        self.logger.info(f"📸 Captura: realtime_capture_{timestamp}.jpg")
+        self.logger.info(f"[CAPTURE] Captura: realtime_capture_{timestamp}.jpg")
     
     def run(self):
         """Ejecutar sistema tiempo real"""
-        self.logger.info("⚡ Iniciando sistema TIEMPO REAL...")
+        self.logger.info("[FAST] Iniciando sistema TIEMPO REAL...")
         
         try:
             self.running = True
@@ -656,9 +1097,9 @@ class RealtimeLPRSystem:
             self.display_thread.start()
             self.ai_thread.start()
             
-            self.logger.info("✅ Sistema TIEMPO REAL iniciado")
-            self.logger.info("🎮 Controles: 'q'=salir, 'r'=reset, 'c'=cache, 's'=captura")
-            self.logger.info("⚡ IA CADA 2 FRAMES + Cooldown 0.5s = DETECCIÓN CASI INSTANTÁNEA")
+            self.logger.info("[OK] Sistema TIEMPO REAL iniciado")
+            self.logger.info("[CONTROL] Controles: 'q'=salir, 'r'=reset, 'c'=cache, 's'=captura")
+            self.logger.info("[FAST] IA CADA 2 FRAMES + Cooldown 0.5s = DETECCIÓN CASI INSTANTÁNEA")
             
             # Esperar threads
             while self.running:
@@ -666,16 +1107,16 @@ class RealtimeLPRSystem:
                 
                 # Verificar threads
                 if not self.capture_thread.is_alive():
-                    self.logger.error("❌ Thread de captura murió")
+                    self.logger.error("[ERROR] Thread de captura murió")
                     break
                 if not self.display_thread.is_alive():
-                    self.logger.error("❌ Thread de display murió")
+                    self.logger.error("[ERROR] Thread de display murió")
                     break
                     
         except KeyboardInterrupt:
-            self.logger.info("⏹️ Detenido por usuario")
+            self.logger.info("[STOP] Detenido por usuario")
         except Exception as e:
-            self.logger.error(f"❌ Error: {e}")
+            self.logger.error(f"[ERROR] Error: {e}")
             import traceback
             self.logger.error(traceback.format_exc())
         finally:
@@ -683,7 +1124,7 @@ class RealtimeLPRSystem:
     
     def stop(self):
         """Detener sistema"""
-        self.logger.info("🛑 Deteniendo sistema TIEMPO REAL...")
+        self.logger.info("[STOP] Deteniendo sistema TIEMPO REAL...")
         
         self.running = False
         
@@ -692,6 +1133,20 @@ class RealtimeLPRSystem:
         for thread in threads:
             if thread and thread.is_alive():
                 thread.join(timeout=2)
+        
+        # Cerrar conexión de base de datos
+        if self.db_manager:
+            try:
+                self.db_manager.close()
+            except Exception as e:
+                self.logger.warning(f"[WARN] Error cerrando BD: {e}")
+        
+        # Detener control PTZ
+        if self.ptz_controller:
+            try:
+                self.ptz_controller.stop()
+            except Exception as e:
+                self.logger.warning(f"[WARN] Error deteniendo PTZ: {e}")
         
         # Estadísticas finales
         if self.start_time:
@@ -703,38 +1158,48 @@ class RealtimeLPRSystem:
             # Calcular latencia promedio
             avg_detections_per_minute = (self.detections_count / runtime) * 60 if runtime > 0 else 0
             
-            self.logger.info("📊 ESTADÍSTICAS TIEMPO REAL:")
-            self.logger.info(f"   ⏱️  Tiempo: {runtime:.1f}s")
-            self.logger.info(f"   📹 FPS Captura: {capture_fps:.1f}")
-            self.logger.info(f"   🖥️ FPS Display: {display_fps:.1f}")
-            self.logger.info(f"   🧠 FPS IA: {ai_fps:.1f}")
-            self.logger.info(f"   🎯 Detecciones: {self.detections_count}")
-            self.logger.info(f"   ⚡ Detecciones/min: {avg_detections_per_minute:.1f}")
-            self.logger.info(f"   📊 Eficiencia IA: {(ai_fps*100):.1f}% más frecuente")
+            self.logger.info("[STATS] ESTADÍSTICAS TIEMPO REAL:")
+            self.logger.info(f"   [TIME] Tiempo: {runtime:.1f}s")
+            self.logger.info(f"   [FPS] FPS Captura: {capture_fps:.1f}")
+            self.logger.info(f"   [FPS] FPS Display: {display_fps:.1f}")
+            self.logger.info(f"   [AI] FPS IA: {ai_fps:.1f}")
+            self.logger.info(f"   [TARGET] Detecciones: {self.detections_count}")
+            self.logger.info(f"   [FAST] Detecciones/min: {avg_detections_per_minute:.1f}")
+            self.logger.info(f"   [STATS] Eficiencia IA: {(ai_fps*100):.1f}% más frecuente")
 
 def main():
     """Función principal tiempo real"""
-    parser = argparse.ArgumentParser(description="Sistema LPR Tiempo Real")
+    parser = argparse.ArgumentParser(description="Sistema LPR Tiempo Real - Jetson Optimized")
     parser.add_argument("--config", default="config/ptz_config.json")
     parser.add_argument("--ai-every", type=int, default=2, help="Procesar IA cada N frames (por defecto: 2)")
     parser.add_argument("--cooldown", type=float, default=0.5, help="Cooldown en segundos (por defecto: 0.5)")
     parser.add_argument("--motion", action="store_true", help="Activar detección de movimiento")
     parser.add_argument("--confidence", type=float, default=0.30, help="Umbral confianza YOLO")
-    parser.add_argument("--display-scale", type=float, default=0.25, help="Escala display")
+    parser.add_argument("--display-scale", type=float, default=0.5, help="Escala display")
+    parser.add_argument("--headless", action="store_true", help="Activar modo sin GUI (recomendado para Jetson)")
     
     args = parser.parse_args()
     
     print("⚡⚡ SISTEMA LPR TIEMPO REAL ⚡⚡")
     print("=" * 50)
-    print("🎯 Enfoque: DETECCIÓN CASI INSTANTÁNEA")
-    print("📹 IA cada 2 frames (máxima frecuencia)")
-    print("⏱️ Cooldown 0.5 segundos (ultra-corto)")
-    print("🔍 Detección de movimiento opcional")
-    print("💨 Procesamiento ultra-agresivo")
+    print("[TARGET] Enfoque: DETECCIÓN CASI INSTANTÁNEA")
+    print("[VIDEO] IA cada 2 frames (máxima frecuencia)")
+    print("[TIME] Cooldown 3.0 segundos (mejorado para evitar duplicados)")
+    print("[TARGET] Detección de movimiento opcional")
+    print("[FAST] Procesamiento optimizado")
+    print("[ROBOT] Optimizado para Jetson Orin Nano")
+    print("[DATABASE] Conexión MySQL habilitada")
+    print("[IMPROVED] Cooldown inteligente por ubicación y texto")
+    print("[IMPROVED] Validación mejorada de OCR para evitar errores")
+    print("[PTZ] Control automático: Scroll y zoom hacia placas detectadas")
+    print("[FILTER] Filtro de distancia: Máximo 5 metros de detección")
     print("=" * 50)
     
+    # Detectar automáticamente si estamos en un entorno sin GUI
+    headless_mode = args.headless or os.environ.get('DISPLAY', '') == '' or os.name == 'nt'
+    
     try:
-        system = RealtimeLPRSystem(args.config)
+        system = RealtimeLPRSystem(args.config, headless=headless_mode)
         
         # Aplicar configuraciones tiempo real
         system.config["realtime_optimization"]["ai_process_every"] = args.ai_every
@@ -743,21 +1208,25 @@ def main():
         system.config["processing"]["confidence_threshold"] = args.confidence
         system.config["realtime_optimization"]["display_scale"] = args.display_scale
         
-        print(f"⚙️ Configuración TIEMPO REAL:")
-        print(f"   🧠 IA cada: {args.ai_every} frames")
-        print(f"   ⏱️ Cooldown: {args.cooldown}s")
-        print(f"   🔍 Detección movimiento: {'Sí' if args.motion else 'No'}")
-        print(f"   🎯 Confianza: {args.confidence}")
-        print(f"   📏 Escala: {args.display_scale}")
+        print(f"[SETUP] Configuración TIEMPO REAL:")
+        print(f"   [AI] IA cada: {args.ai_every} frames")
+        print(f"   [TIME] Cooldown: {args.cooldown}s")
+        print(f"   [TARGET] Detección movimiento: {'Sí' if args.motion else 'No'}")
+        print(f"   [CONFIDENCE] Confianza: {args.confidence}")
+        print(f"   [SCALE] Escala: {args.display_scale}")
+        print(f"   [HEADLESS] Modo sin GUI: {'Sí' if headless_mode else 'No'}")
         print()
-        print("🚨 ADVERTENCIA: Este modo consume más recursos")
-        print("🚨 pero detecta placas CASI INSTANTÁNEAMENTE")
+        if headless_mode:
+            print("[WARN] ADVERTENCIA: Modo HEADLESS activado - Sin interfaz gráfica")
+        else:
+            print("[WARN] ADVERTENCIA: Este modo consume más recursos")
+        print("[WARN] pero detecta placas CASI INSTANTÁNEAMENTE")
         print()
         
         system.run()
         
     except Exception as e:
-        print(f"❌ Error fatal: {e}")
+        print(f"[ERROR] Error fatal: {e}")
         import traceback
         traceback.print_exc()
         return 1
