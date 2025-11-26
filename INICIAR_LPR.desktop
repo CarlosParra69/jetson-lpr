@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=🚗 Iniciar Sistema LPR
+Comment=Ejecuta el sistema de reconocimiento de placas en tiempo real
+Exec=bash -c "cd $HOME/Desktop/Jetson/jetson-lpr && python3 realtime_lpr_fixed.py"
+Icon=applications-system
+Terminal=true
+Categories=System;Utility;
+StartupNotify=true
+Path=$HOME/Desktop/Jetson/jetson-lpr
+

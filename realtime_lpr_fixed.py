@@ -135,8 +135,9 @@ class RealtimeLPRSystem:
         
         # Sistema de agrupación inteligente de detecciones
         self.detection_groups = {}  # Agrupa detecciones similares por vehículo
-        self.group_timeout_sec = 1.0  # Tiempo para agrupar detecciones similares (reducido para reconocimiento más rápido)
+        self.group_timeout_sec = 0.3  # Tiempo reducido para procesar grupos más rápido (0.3s)
         self.group_lock = threading.Lock()  # Lock para grupos de detecciones
+        self.processing_groups = set()  # Grupos que están siendo procesados para evitar duplicados
         
         # Detección de movimiento para activar IA
         self.motion_detector = cv2.createBackgroundSubtractorMOG2(detectShadows=False)
@@ -264,8 +265,8 @@ class RealtimeLPRSystem:
                 "plate_confidence_min": 0.25,  # OCR reducido agresivamente para placas colombianas (amarillas/blancas)
                 "max_detections": 5,            # Más detecciones simultáneas
                 "ocr_cache_enabled": True,
-                "detection_cooldown_sec": 1.5,  # Cooldown reducido para detección más frecuente
-                "bbox_cooldown_sec": 1.0,       # Cooldown por ubicación reducido
+                "detection_cooldown_sec": 0.8,  # Cooldown muy reducido para detección más frecuente
+                "bbox_cooldown_sec": 0.5,       # Cooldown por ubicación muy reducido
                 "motion_cooldown_sec": 1,       # Cooldown para detección de movimiento reducido
                 "similarity_threshold": 0.6,    # Umbral más bajo para agrupar variaciones
                 "max_plate_variations": 5,      # Más variaciones a considerar
@@ -469,8 +470,8 @@ class RealtimeLPRSystem:
             matching_pixels = cv2.countNonZero(combined_mask)
             color_ratio = matching_pixels / total_pixels if total_pixels > 0 else 0
             
-            # Si al menos 15% del ROI tiene colores de placa colombiana, es válido
-            return color_ratio >= 0.15
+            # Si al menos 10% del ROI tiene colores de placa colombiana, es válido (más permisivo)
+            return color_ratio >= 0.10
             
         except Exception as e:
             self.logger.debug(f"[COLOR] Error en detección de color: {e}")
@@ -1047,50 +1048,75 @@ class RealtimeLPRSystem:
             return best_detection
     
     def cleanup_expired_groups(self):
-        """Limpiar grupos de detecciones expirados y procesar los que están listos"""
+        """Limpiar grupos de detecciones expirados y procesar los que están listos - OPTIMIZADO"""
         current_time = time.time()
         
+        # Obtener grupos a procesar sin bloquear mucho tiempo
+        groups_to_process = []
+        groups_to_remove = []
+        
         with self.group_lock:
-            groups_to_process = []
-            groups_to_remove = []
-            
             for group_id, group_data in list(self.detection_groups.items()):
+                # Evitar procesar grupos que ya están siendo procesados
+                if group_id in self.processing_groups:
+                    continue
+                    
                 start_time = group_data.get('start_time', 0)
                 last_update = group_data.get('last_update', 0)
                 
-                # Si el grupo no ha recibido actualizaciones en 1 segundo, procesarlo (reducido para reconocimiento más rápido)
-                if (current_time - last_update) >= 1.0:
+                # Procesar grupos más rápido: 0.3 segundos sin actualizaciones
+                if (current_time - last_update) >= self.group_timeout_sec:
                     groups_to_process.append(group_id)
-                # Si el grupo es muy antiguo (más de 3 segundos), eliminarlo sin procesar
-                elif (current_time - start_time) > 3.0:
+                # Si el grupo es muy antiguo (más de 2 segundos), eliminarlo sin procesar
+                elif (current_time - start_time) > 2.0:
                     groups_to_remove.append(group_id)
+        
+        # Procesar grupos en thread separado para no bloquear
+        for group_id in groups_to_process:
+            if group_id in self.processing_groups:
+                continue
+                
+            self.processing_groups.add(group_id)
             
-            # Procesar grupos listos
-            for group_id in groups_to_process:
-                self.logger.info(f"[GROUP] Procesando grupo {group_id} - seleccionando mejor detección...")
-                best_detection = self.select_best_detection_from_group(group_id)
-                if best_detection:
-                    # Guardar la mejor detección
-                    plate_text = best_detection.get('plate_text', 'UNKNOWN')
-                    self.logger.info(f"[GROUP] ✅ Mejor detección seleccionada: {plate_text} - Finalizando...")
-                    try:
-                        self.finalize_best_detection(best_detection)
-                        self.logger.info(f"[GROUP] ✅ Detección {plate_text} finalizada correctamente")
-                    except Exception as e:
-                        self.logger.error(f"[GROUP] ❌ Error finalizando detección {plate_text}: {e}")
-                        import traceback
-                        self.logger.error(traceback.format_exc())
-                else:
-                    self.logger.warning(f"[GROUP] ⚠️ No se pudo seleccionar mejor detección del grupo {group_id}")
-                groups_to_remove.append(group_id)
+            # Procesar en thread separado para no bloquear el flujo principal
+            def process_group_async(gid):
+                try:
+                    self.logger.info(f"[GROUP] Procesando grupo {gid} - seleccionando mejor detección...")
+                    best_detection = self.select_best_detection_from_group(gid)
+                    if best_detection:
+                        plate_text = best_detection.get('plate_text', 'UNKNOWN')
+                        self.logger.info(f"[GROUP] ✅ Mejor detección seleccionada: {plate_text} - Finalizando...")
+                        try:
+                            self.finalize_best_detection(best_detection)
+                            self.logger.info(f"[GROUP] ✅ Detección {plate_text} finalizada correctamente")
+                        except Exception as e:
+                            self.logger.error(f"[GROUP] ❌ Error finalizando detección {plate_text}: {e}")
+                            import traceback
+                            self.logger.error(traceback.format_exc())
+                    else:
+                        self.logger.warning(f"[GROUP] ⚠️ No se pudo seleccionar mejor detección del grupo {gid}")
+                    
+                    # Eliminar grupo después de procesar
+                    with self.group_lock:
+                        if gid in self.detection_groups:
+                            del self.detection_groups[gid]
+                    self.processing_groups.discard(gid)
+                except Exception as e:
+                    self.logger.error(f"[GROUP] Error procesando grupo {gid}: {e}")
+                    self.processing_groups.discard(gid)
             
-            # Eliminar grupos procesados o expirados
+            # Ejecutar en thread daemon para no bloquear
+            thread = threading.Thread(target=process_group_async, args=(group_id,), daemon=True)
+            thread.start()
+        
+        # Eliminar grupos expirados inmediatamente
+        with self.group_lock:
             for group_id in groups_to_remove:
-                if group_id in self.detection_groups:
+                if group_id in self.detection_groups and group_id not in self.processing_groups:
                     del self.detection_groups[group_id]
     
     def finalize_best_detection(self, detection):
-        """Finalizar y guardar la mejor detección de un grupo"""
+        """Finalizar y guardar la mejor detección de un grupo - OPTIMIZADO para no bloquear"""
         try:
             # Usar frame guardado en la detección o frame actual como fallback
             frame = detection.get('frame')
@@ -1105,12 +1131,12 @@ class RealtimeLPRSystem:
             timestamp = datetime.now()
             
             # Log de inicio de finalización
-            self.logger.info(f"[FINALIZE] Finalizando mejor detección: {detection['plate_text']} "
+            plate_text = detection.get('plate_text', 'UNKNOWN')
+            self.logger.info(f"[FINALIZE] Finalizando mejor detección: {plate_text} "
                            f"(OCR: {detection.get('ocr_confidence', 0):.2f}, "
                            f"YOLO: {detection.get('yolo_confidence', 0):.2f})")
             
-            # Sistema de detección mejorada - deshabilitada temporalmente para procesamiento directo
-            # Guardar directamente para mostrar cuadro verde inmediatamente
+            # Procesar directamente sin bloqueos - simplificado
             self.finalize_detection(detection, frame, timestamp)
                 
         except Exception as e:
@@ -1174,9 +1200,10 @@ class RealtimeLPRSystem:
                             roi = frame[y1:y2, x1:x2]
                             
                             # FILTRO DE COLOR: Verificar si es placa colombiana (amarilla/blanca)
-                            if not self.detect_colombian_plate_colors(roi):
-                                self.logger.debug(f"[FILTER] Placa rechazada por color: no coincide con placas colombianas")
-                                continue  # No es una placa colombiana típica
+                            # Deshabilitado temporalmente para detección más agresiva
+                            # if not self.detect_colombian_plate_colors(roi):
+                            #     self.logger.debug(f"[FILTER] Placa rechazada por color: no coincide con placas colombianas")
+                            #     continue  # No es una placa colombiana típica
                             
                             # OCR con cache
                             plate_texts = self.get_plate_text_cached_realtime(roi)
@@ -1233,11 +1260,13 @@ class RealtimeLPRSystem:
                                         self.logger.debug(f"[FILTER] Usando detección previa más confiable: {better_text}")
                                         continue  # Ignorar esta detección, usar la anterior
                                 
-                                # Cooldown por texto de placa
+                                # Cooldown por texto de placa - REDUCIDO para detección más frecuente
                                 cooldown_sec = self.config["processing"]["detection_cooldown_sec"]
                                 if text in self.detection_cooldown:
                                     last_time = self.detection_cooldown[text]
+                                    # Solo aplicar cooldown si la placa es exactamente igual (evitar duplicados exactos)
                                     if (current_time_float - last_time) < cooldown_sec:
+                                        # Permitir si es una variación diferente (ej: LCP909 vs ILCP9091)
                                         continue  # Esta placa fue detectada recientemente
                                 
                                 # Actualizar cooldowns
@@ -1286,9 +1315,20 @@ class RealtimeLPRSystem:
                                 
                                 self.logger.info(f"[GROUP] Detección agregada al grupo {group_id}: {text} "
                                                f"(OCR: {ocr_conf:.2f}, Distancia: {estimated_distance:.1f}m)")
+                                
+                                # Si la confianza es alta, procesar inmediatamente sin esperar agrupación
+                                if ocr_conf >= 0.60 and is_valid_license_plate(text):
+                                    # Procesar inmediatamente si la confianza es alta
+                                    self.logger.info(f"[FAST] Procesando inmediatamente placa de alta confianza: {text}")
+                                    try:
+                                        self.finalize_detection(detection, frame, current_time)
+                                    except Exception as e:
+                                        self.logger.error(f"[ERROR] Error procesando inmediatamente: {e}")
             
-            # Limpiar grupos expirados y procesar los listos
-            self.cleanup_expired_groups()
+            # Limpiar grupos expirados y procesar los listos (más frecuente)
+            # Solo limpiar cada 5 frames para no sobrecargar
+            if self.ai_processed_frames % 5 == 0:
+                self.cleanup_expired_groups()
             
             return detections
             
