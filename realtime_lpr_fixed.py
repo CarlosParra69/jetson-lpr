@@ -249,10 +249,10 @@ class RealtimeLPRSystem:
                 "interface": "enP8p1s0"
             },
             "realtime_optimization": {
-                "capture_target_fps": 25,      # Más FPS de captura
-                "display_target_fps": 20,      # Más FPS de display  
-                "ai_process_every": 2,         # IA CADA 2 FRAMES (ultra-frecuente)
-                "motion_activation": True,     # Activar IA solo con movimiento
+                "capture_target_fps": 30,      # FPS aumentado para más frames
+                "display_target_fps": 25,      # FPS de display aumentado
+                "ai_process_every": 1,         # IA CADA FRAME (máxima frecuencia para placas colombianas)
+                "motion_activation": False,    # Desactivar detección de movimiento para procesar siempre
                 "display_scale": 0.5,          # Display más grande (50% del tamaño original)
                 "minimal_rendering": True,     
                 "fast_resize": True,           
@@ -260,23 +260,26 @@ class RealtimeLPRSystem:
                 "headless_mode": self.headless # Modo sin GUI
             },
             "processing": {
-                "confidence_threshold": 0.30,  # Umbral más bajo para no perder detecciones
-                "plate_confidence_min": 0.30,  # OCR reducido para aceptar más placas válidas (antes 0.60)
-                "max_detections": 3,
+                "confidence_threshold": 0.20,  # UMBRAL MUY BAJO para detección agresiva de placas colombianas
+                "plate_confidence_min": 0.25,  # OCR reducido agresivamente para placas colombianas (amarillas/blancas)
+                "max_detections": 5,            # Más detecciones simultáneas
                 "ocr_cache_enabled": True,
-                "detection_cooldown_sec": 3.0,  # Cooldown aumentado para evitar duplicados
-                "bbox_cooldown_sec": 2.0,       # Cooldown por ubicación
-                "motion_cooldown_sec": 2,       # Cooldown para detección de movimiento
-                "similarity_threshold": 0.7,    # Umbral para detectar variaciones similares
-                "max_plate_variations": 3,      # Máximo de variaciones a considerar
-                "max_detection_distance_m": 7.0,  # Distancia máxima de detección en metros
-                "min_plate_width_px": 65,        # Ancho mínimo de placa en píxeles (calibrado para ~7m)
-                "min_plate_height_px": 28,       # Altura mínima de placa en píxeles (calibrado para ~7m)
-                "distance_filter_enabled": True,  # Habilitar filtro de distancia
+                "detection_cooldown_sec": 1.5,  # Cooldown reducido para detección más frecuente
+                "bbox_cooldown_sec": 1.0,       # Cooldown por ubicación reducido
+                "motion_cooldown_sec": 1,       # Cooldown para detección de movimiento reducido
+                "similarity_threshold": 0.6,    # Umbral más bajo para agrupar variaciones
+                "max_plate_variations": 5,      # Más variaciones a considerar
+                "max_detection_distance_m": 10.0,  # Distancia máxima aumentada para detectar más lejos
+                "min_plate_width_px": 50,        # Ancho mínimo reducido (detectar placas más pequeñas)
+                "min_plate_height_px": 20,       # Altura mínima reducida (detectar placas más pequeñas)
+                "distance_filter_enabled": False,  # Deshabilitar filtro de distancia para detección agresiva
                 "detection_display_timeout_sec": 3.0,  # Tiempo antes de borrar cuadros de detección
                 "enhanced_detection_enabled": True,    # Habilitar detección mejorada con zoom
-                "freeze_frame_sec": 2.0,               # Segundos para congelar frame antes de zoom
-                "enhanced_ocr_confidence_min": 0.75    # Confianza mínima OCR después de zoom mejorado (ultra-agresivo)
+                "freeze_frame_sec": 1.5,               # Tiempo reducido para respuesta más rápida
+                "enhanced_ocr_confidence_min": 0.60,    # Confianza mínima OCR reducida (más agresivo)
+                "colombian_plate_optimization": True,  # Optimización específica para placas colombianas
+                "color_detection_enabled": True,       # Detectar placas amarillas/blancas
+                "preprocess_aggressive": True          # Preprocesamiento agresivo
             },
             "database": {
                 "enabled": True,
@@ -431,6 +434,93 @@ class RealtimeLPRSystem:
             self.logger.error(f"[ERROR] Error cargando modelos: {e}")
             raise
     
+    def detect_colombian_plate_colors(self, roi):
+        """
+        Detectar si el ROI contiene colores de placa colombiana (amarilla/blanca)
+        Retorna True si detecta colores típicos de placas colombianas
+        """
+        if not self.config["processing"].get("color_detection_enabled", True):
+            return True  # Si está deshabilitado, aceptar todas
+        
+        try:
+            if roi.size == 0 or len(roi.shape) != 3:
+                return True  # Si no hay color, asumir válido
+            
+            # Convertir a HSV para mejor detección de color
+            hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+            
+            # Rango para amarillo (placas amarillas colombianas)
+            # Amarillo en HSV: H=15-30, S>50, V>50
+            yellow_lower = np.array([15, 50, 50])
+            yellow_upper = np.array([30, 255, 255])
+            yellow_mask = cv2.inRange(hsv, yellow_lower, yellow_upper)
+            
+            # Rango para blanco (placas blancas colombianas)
+            # Blanco en HSV: S<30, V>200
+            white_lower = np.array([0, 0, 200])
+            white_upper = np.array([180, 30, 255])
+            white_mask = cv2.inRange(hsv, white_lower, white_upper)
+            
+            # Combinar máscaras
+            combined_mask = cv2.bitwise_or(yellow_mask, white_mask)
+            
+            # Calcular porcentaje de píxeles que coinciden con colores de placa
+            total_pixels = roi.shape[0] * roi.shape[1]
+            matching_pixels = cv2.countNonZero(combined_mask)
+            color_ratio = matching_pixels / total_pixels if total_pixels > 0 else 0
+            
+            # Si al menos 15% del ROI tiene colores de placa colombiana, es válido
+            return color_ratio >= 0.15
+            
+        except Exception as e:
+            self.logger.debug(f"[COLOR] Error en detección de color: {e}")
+            return True  # En caso de error, aceptar
+    
+    def preprocess_colombian_plate(self, roi):
+        """
+        Preprocesamiento agresivo específico para placas colombianas (amarillas/blancas)
+        Aplica múltiples técnicas para mejorar contraste y legibilidad
+        """
+        if not self.config["processing"].get("preprocess_aggressive", True):
+            return roi
+        
+        try:
+            if roi.size == 0:
+                return roi
+            
+            # Convertir a escala de grises si es necesario
+            if len(roi.shape) == 3:
+                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = roi.copy()
+            
+            # TÉCNICA 1: CLAHE (Contrast Limited Adaptive Histogram Equalization)
+            # Mejora contraste local, especialmente útil para placas con iluminación desigual
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(gray)
+            
+            # TÉCNICA 2: Sharpening para mejorar bordes de caracteres
+            kernel_sharpen = np.array([[-1, -1, -1],
+                                      [-1,  9, -1],
+                                      [-1, -1, -1]])
+            sharpened = cv2.filter2D(enhanced, -1, kernel_sharpen)
+            
+            # TÉCNICA 3: Bilateral filter para reducir ruido manteniendo bordes
+            denoised = cv2.bilateralFilter(sharpened, 5, 50, 50)
+            
+            # TÉCNICA 4: OTSU thresholding para binarización adaptativa
+            _, otsu = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            
+            # TÉCNICA 5: Morphological operations para limpiar
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+            cleaned = cv2.morphologyEx(otsu, cv2.MORPH_CLOSE, kernel)
+            
+            return cleaned
+            
+        except Exception as e:
+            self.logger.debug(f"[PREPROCESS] Error en preprocesamiento: {e}")
+            return roi
+    
     def detect_motion(self, frame):
         """Detectar movimiento para activar IA"""
         if not self.config["realtime_optimization"]["motion_activation"]:
@@ -482,10 +572,17 @@ class RealtimeLPRSystem:
                 except queue.Full:
                     pass
                 
-                # IA MUY FRECUENTE + detección de movimiento
+                # IA CADA FRAME para detección agresiva de placas colombianas
                 ai_every = self.config["realtime_optimization"]["ai_process_every"]
                 if self.capture_frame_count % ai_every == 0:
-                    if self.detect_motion(frame):
+                    # Si motion_activation está deshabilitado, procesar siempre
+                    if not self.config["realtime_optimization"]["motion_activation"]:
+                        try:
+                            if not self.ai_queue.full():
+                                self.ai_queue.put(frame.copy(), block=False)
+                        except queue.Full:
+                            pass
+                    elif self.detect_motion(frame):
                         try:
                             if not self.ai_queue.full():
                                 self.ai_queue.put(frame.copy(), block=False)
@@ -1026,10 +1123,10 @@ class RealtimeLPRSystem:
         try:
             self.ai_processed_frames += 1
             
-            # YOLO más rápido
+            # YOLO más agresivo con umbral bajo para placas colombianas
             results = self.yolo_model(frame, verbose=False, 
                                      conf=self.config["processing"]["confidence_threshold"],
-                                     iou=0.5)  # NMS más agresivo
+                                     iou=0.45)  # NMS menos agresivo para capturar más detecciones
             
             detections = []
             current_time = datetime.now()
@@ -1042,8 +1139,10 @@ class RealtimeLPRSystem:
                         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                         confidence = float(box.conf[0].cpu().numpy())
                         
-                        # Umbral de confianza más estricto
-                        if confidence < self.config["processing"]["plate_confidence_min"]:
+                        # Umbral de confianza reducido para detección agresiva
+                        # Aceptar detecciones con confianza muy baja para placas colombianas
+                        min_yolo_conf = max(0.15, self.config["processing"]["confidence_threshold"])
+                        if confidence < min_yolo_conf:
                             continue
                         
                         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
@@ -1073,6 +1172,11 @@ class RealtimeLPRSystem:
                                     continue  # Esta ubicación fue detectada recientemente
                             
                             roi = frame[y1:y2, x1:x2]
+                            
+                            # FILTRO DE COLOR: Verificar si es placa colombiana (amarilla/blanca)
+                            if not self.detect_colombian_plate_colors(roi):
+                                self.logger.debug(f"[FILTER] Placa rechazada por color: no coincide con placas colombianas")
+                                continue  # No es una placa colombiana típica
                             
                             # OCR con cache
                             plate_texts = self.get_plate_text_cached_realtime(roi)
@@ -1221,49 +1325,115 @@ class RealtimeLPRSystem:
         return texts
     
     def read_plate_text(self, roi):
-        """OCR optimizado"""
+        """
+        OCR optimizado AGRESIVO para placas colombianas (amarillas/blancas)
+        Aplica múltiples técnicas de preprocesamiento y OCR para máxima precisión
+        """
         try:
             if roi.size == 0:
                 return []
-                
-            # 🔥 OPTIMIZACIÓN 1: Reducir ROI agresivamente
-            target_height = 60   # Altura máxima para OCR
-            target_width = 180   # Ancho máximo para OCR
+            
+            # 🔥 OPTIMIZACIÓN 1: Aumentar tamaño mínimo para mejor OCR
+            # Las placas colombianas necesitan más resolución para caracteres claros
+            target_height = 80   # Altura aumentada para mejor OCR
+            target_width = 240   # Ancho aumentado para mejor OCR
         
             if roi.shape[0] > target_height or roi.shape[1] > target_width:
                 scale_h = target_height / roi.shape[0] if roi.shape[0] > target_height else 1.0
                 scale_w = target_width / roi.shape[1] if roi.shape[1] > target_width else 1.0
                 scale = min(scale_h, scale_w)
             
-                new_h = max(20, int(roi.shape[0] * scale))  # Mínimo 20px altura
-                new_w = max(60, int(roi.shape[1] * scale))  # Mínimo 60px ancho
-                roi = cv2.resize(roi, (new_w, new_h), interpolation=cv2.INTER_LINEAR)    
-            
-            # Preprocesamiento ultra-mínimo
-            if len(roi.shape) == 3:
-                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                new_h = max(40, int(roi.shape[0] * scale))  # Mínimo 40px altura (aumentado)
+                new_w = max(100, int(roi.shape[1] * scale))  # Mínimo 100px ancho (aumentado)
+                roi = cv2.resize(roi, (new_w, new_h), interpolation=cv2.INTER_CUBIC)  # CUBIC para mejor calidad
             else:
-                gray = roi
-                
-            gray = cv2.bilateralFilter(gray, 3, 30, 30)
+                # Si es muy pequeño, ampliar para mejor OCR
+                if roi.shape[0] < 40 or roi.shape[1] < 100:
+                    scale_factor = max(40 / roi.shape[0], 100 / roi.shape[1])
+                    new_h = int(roi.shape[0] * scale_factor)
+                    new_w = int(roi.shape[1] * scale_factor)
+                    roi = cv2.resize(roi, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
             
-            # OCR directo sin preprocesamiento adicional
-            ocr_results = self.ocr_reader.readtext(gray)
+            # PREPROCESAMIENTO AGRESIVO para placas colombianas
+            if self.config["processing"].get("colombian_plate_optimization", True):
+                processed_roi = self.preprocess_colombian_plate(roi)
+            else:
+                # Preprocesamiento básico
+                if len(roi.shape) == 3:
+                    processed_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                else:
+                    processed_roi = roi.copy()
+                processed_roi = cv2.bilateralFilter(processed_roi, 5, 50, 50)
             
-            texts = []
-            for (bbox, text, confidence) in ocr_results:
-                # Umbral de confianza más estricto para evitar errores OCR
-                if confidence >= self.config["processing"]["plate_confidence_min"] and len(text.strip()) > 2:
-                    cleaned_text = re.sub(r'[^A-Z0-9]', '', text.upper())
-                    if len(cleaned_text) >= 3:
-                        texts.append({
-                            'text': cleaned_text,
-                            'confidence': confidence
-                        })
+            # MÚLTIPLES INTENTOS DE OCR con diferentes preprocesamientos
+            all_texts = []
+            
+            # INTENTO 1: Con preprocesamiento agresivo
+            try:
+                ocr_results = self.ocr_reader.readtext(processed_roi)
+                for (bbox, text, confidence) in ocr_results:
+                    if confidence >= self.config["processing"]["plate_confidence_min"] and len(text.strip()) > 2:
+                        cleaned_text = re.sub(r'[^A-Z0-9]', '', text.upper())
+                        if len(cleaned_text) >= 3:
+                            all_texts.append({
+                                'text': cleaned_text,
+                                'confidence': confidence
+                            })
+            except:
+                pass
+            
+            # INTENTO 2: Con ROI original (por si el preprocesamiento no funciona bien)
+            if len(roi.shape) == 3:
+                gray_original = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            else:
+                gray_original = roi.copy()
+            
+            try:
+                ocr_results2 = self.ocr_reader.readtext(gray_original)
+                for (bbox, text, confidence) in ocr_results2:
+                    if confidence >= self.config["processing"]["plate_confidence_min"] and len(text.strip()) > 2:
+                        cleaned_text = re.sub(r'[^A-Z0-9]', '', text.upper())
+                        if len(cleaned_text) >= 3:
+                            all_texts.append({
+                                'text': cleaned_text,
+                                'confidence': confidence
+                            })
+            except:
+                pass
+            
+            # INTENTO 3: Con threshold adaptativo adicional
+            try:
+                adaptive_thresh = cv2.adaptiveThreshold(
+                    processed_roi, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                    cv2.THRESH_BINARY, 11, 2
+                )
+                ocr_results3 = self.ocr_reader.readtext(adaptive_thresh)
+                for (bbox, text, confidence) in ocr_results3:
+                    if confidence >= self.config["processing"]["plate_confidence_min"] and len(text.strip()) > 2:
+                        cleaned_text = re.sub(r'[^A-Z0-9]', '', text.upper())
+                        if len(cleaned_text) >= 3:
+                            all_texts.append({
+                                'text': cleaned_text,
+                                'confidence': confidence
+                            })
+            except:
+                pass
+            
+            # Eliminar duplicados y mantener el de mayor confianza
+            unique_texts = {}
+            for text_data in all_texts:
+                text = text_data['text']
+                conf = text_data['confidence']
+                if text not in unique_texts or conf > unique_texts[text]['confidence']:
+                    unique_texts[text] = text_data
+            
+            # Ordenar por confianza descendente
+            texts = sorted(unique_texts.values(), key=lambda x: x['confidence'], reverse=True)
             
             return texts
             
         except Exception as e:
+            self.logger.debug(f"[OCR] Error en lectura de placa: {e}")
             return []
     
     def initiate_enhanced_detection(self, frame, bbox, initial_text, initial_ocr_conf, yolo_conf, 
@@ -1758,21 +1928,24 @@ def main():
     
     args = parser.parse_args()
     
-    print("⚡⚡ SISTEMA LPR TIEMPO REAL ⚡⚡")
-    print("=" * 50)
-    print("[TARGET] Enfoque: DETECCIÓN CASI INSTANTÁNEA")
-    print("[VIDEO] IA cada 2 frames (máxima frecuencia)")
-    print("[TIME] Cooldown 3.0 segundos (mejorado para evitar duplicados)")
-    print("[TARGET] Detección de movimiento opcional")
-    print("[FAST] Procesamiento optimizado")
+    print("⚡⚡ SISTEMA LPR TIEMPO REAL - PLACAS COLOMBIANAS ⚡⚡")
+    print("=" * 60)
+    print("[TARGET] Enfoque: DETECCIÓN AGRESIVA DE PLACAS COLOMBIANAS")
+    print("[COLOMBIA] Optimizado para placas AMARILLAS y BLANCAS")
+    print("[VIDEO] IA cada FRAME (máxima frecuencia posible)")
+    print("[TIME] Cooldown 1.5 segundos (detección más frecuente)")
+    print("[AGGRESSIVE] Umbrales reducidos: YOLO 0.20, OCR 0.25")
+    print("[COLOR] Detección de color: Filtra placas amarillas/blancas")
+    print("[PREPROCESS] Preprocesamiento agresivo: CLAHE + Sharpening + OTSU")
+    print("[OCR] Múltiples intentos OCR con diferentes técnicas")
+    print("[FAST] Procesamiento optimizado para velocidad máxima")
     print("[ROBOT] Optimizado para Jetson Orin Nano")
     print("[DATABASE] Conexión MySQL habilitada")
     print("[IMPROVED] Cooldown inteligente por ubicación y texto")
-    print("[IMPROVED] Validación mejorada de OCR para evitar errores")
     print("[PTZ] Control automático: Scroll y zoom hacia placas detectadas")
-    print("[FILTER] Filtro de distancia: Máximo 7 metros de detección")
-    print("[ENHANCED] Detección mejorada: Congelar 2s -> Zoom -> Análisis mejorado")
-    print("=" * 50)
+    print("[DISTANCE] Filtro de distancia DESHABILITADO (detección agresiva)")
+    print("[ENHANCED] Detección mejorada: Congelar 1.5s -> Zoom -> Análisis mejorado")
+    print("=" * 60)
     
     # Detectar automáticamente si estamos en un entorno sin GUI
     headless_mode = args.headless or os.environ.get('DISPLAY', '') == '' or os.name == 'nt'
