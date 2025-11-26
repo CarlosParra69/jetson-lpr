@@ -300,9 +300,9 @@ class RealtimeLPRSystem:
                 "motion_cooldown_sec": 1,       # Cooldown para detección de movimiento
                 "similarity_threshold": 0.75,   # Umbral aumentado para agrupar solo variaciones muy similares
                 "max_plate_variations": 3,      # Menos variaciones para evitar errores
-                "max_detection_distance_m": 15.0,  # Distancia máxima aumentada para mayor alcance
-                "min_plate_width_px": 40,        # Ancho mínimo reducido para detectar más lejos
-                "min_plate_height_px": 15,       # Altura mínima reducida para detectar más lejos
+                "max_detection_distance_m": 30.0,  # Distancia máxima aumentada para máximo alcance (30 metros)
+                "min_plate_width_px": 25,        # Ancho mínimo muy reducido para detectar placas muy lejanas
+                "min_plate_height_px": 10,       # Altura mínima muy reducida para detectar placas muy lejanas
                 "distance_filter_enabled": True,  # Habilitar filtro de distancia pero con rango amplio
                 "detection_display_timeout_sec": 10.0,  # Tiempo aumentado para ver detecciones más tiempo
                 "enhanced_detection_enabled": True,    # Habilitar detección mejorada con zoom
@@ -311,8 +311,8 @@ class RealtimeLPRSystem:
                 "colombian_plate_optimization": True,  # Optimización específica para placas colombianas
                 "color_detection_enabled": False,      # Deshabilitar filtro de color (más permisivo)
                 "preprocess_aggressive": True,         # Preprocesamiento agresivo
-                "min_roi_width_for_ocr": 80,          # Ancho mínimo de ROI para OCR (mejor calidad)
-                "min_roi_height_for_ocr": 30           # Altura mínima de ROI para OCR (mejor calidad)
+                "min_roi_width_for_ocr": 60,          # Ancho mínimo de ROI para OCR (reducido para mayor alcance)
+                "min_roi_height_for_ocr": 20           # Altura mínima de ROI para OCR (reducido para mayor alcance)
             },
             "database": {
                 "enabled": True,
@@ -833,6 +833,7 @@ class RealtimeLPRSystem:
         """
         Estimar distancia de la placa basándose en el tamaño del bbox
         Retorna distancia estimada en metros
+        Optimizado para mayor alcance (hasta 30 metros)
         """
         x1, y1, x2, y2 = bbox
         plate_width = x2 - x1
@@ -843,32 +844,38 @@ class RealtimeLPRSystem:
         real_plate_width_cm = 52.0  # cm
         real_plate_height_cm = 11.0  # cm
         
-        # Calcular área de la placa en píxeles
-        plate_area_px = plate_width * plate_height
+        # Calibración mejorada para mayor alcance:
+        # - Placa de 80px de ancho = 5 metros (cerca)
+        # - Placa de 40px de ancho = 10 metros (media distancia)
+        # - Placa de 20px de ancho = 20 metros (lejos)
+        # - Placa de 10px de ancho = 30+ metros (muy lejos)
         
-        # Calcular área del frame
-        frame_area_px = frame_width * frame_height
-        
-        # Proporción de la placa respecto al frame
-        plate_ratio = plate_area_px / frame_area_px if frame_area_px > 0 else 0
-        
-        # Estimar distancia usando modelo simplificado:
-        # Distancia inversamente proporcional al tamaño aparente
-        # Asumimos que una placa de 80px de ancho está a ~5 metros
-        # (esto se puede calibrar según la cámara)
-        
-        # Calibración: placa de 80px de ancho = 5 metros
         reference_width_px = 80
         reference_distance_m = 5.0
         
-        if plate_width < 20:  # Muy pequeña, probablemente muy lejos
-            return 20.0  # Retornar distancia grande
+        if plate_width < 10:  # Muy pequeña, probablemente muy lejos (30+ metros)
+            return 35.0  # Retornar distancia muy grande
+        elif plate_width < 15:  # Muy pequeña, lejos (25-30 metros)
+            return 30.0
+        elif plate_width < 20:  # Pequeña, lejos (20-25 metros)
+            return 25.0
+        elif plate_width < 30:  # Pequeña, media distancia (15-20 metros)
+            return 18.0
         
-        # Estimar distancia usando relación inversa
+        # Estimar distancia usando relación inversa mejorada
         # d = d_ref * (w_ref / w_actual)
-        estimated_distance = reference_distance_m * (reference_width_px / plate_width)
+        # Aplicar factor de corrección para distancias mayores
+        base_distance = reference_distance_m * (reference_width_px / plate_width)
         
-        return estimated_distance
+        # Factor de corrección para distancias mayores (más preciso)
+        if base_distance > 15:
+            # Para distancias mayores, usar modelo más conservador
+            estimated_distance = base_distance * 0.9  # Reducir ligeramente
+        else:
+            estimated_distance = base_distance
+        
+        # Limitar a máximo 30 metros
+        return min(estimated_distance, 30.0)
     
     def is_within_detection_range(self, bbox, frame_width, frame_height):
         """
@@ -1430,13 +1437,25 @@ class RealtimeLPRSystem:
             
             # 🔥 OPTIMIZACIÓN 1: Verificar tamaño mínimo antes de procesar OCR
             # Las placas colombianas necesitan tamaño mínimo para reconocimiento preciso
-            min_width = self.config["processing"].get("min_roi_width_for_ocr", 80)
-            min_height = self.config["processing"].get("min_roi_height_for_ocr", 30)
+            # Valores reducidos para permitir mayor alcance
+            min_width = self.config["processing"].get("min_roi_width_for_ocr", 60)
+            min_height = self.config["processing"].get("min_roi_height_for_ocr", 20)
             
-            # Si el ROI es muy pequeño, rechazar (no se puede reconocer bien)
+            # Si el ROI es muy pequeño, intentar ampliarlo antes de rechazar
             if roi.shape[1] < min_width or roi.shape[0] < min_height:
-                self.logger.debug(f"[OCR] ROI muy pequeño para OCR: {roi.shape[1]}x{roi.shape[0]} (mínimo: {min_width}x{min_height})")
-                return []
+                # Intentar ampliar si es muy pequeño pero no extremadamente pequeño
+                if roi.shape[1] >= 30 and roi.shape[0] >= 12:
+                    # Ampliar para alcanzar mínimo
+                    scale_w = min_width / roi.shape[1] if roi.shape[1] < min_width else 1.0
+                    scale_h = min_height / roi.shape[0] if roi.shape[0] < min_height else 1.0
+                    scale = max(scale_w, scale_h)
+                    new_w = int(roi.shape[1] * scale)
+                    new_h = int(roi.shape[0] * scale)
+                    roi = cv2.resize(roi, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+                else:
+                    # Muy pequeño, rechazar
+                    self.logger.debug(f"[OCR] ROI muy pequeño para OCR: {roi.shape[1]}x{roi.shape[0]} (mínimo: {min_width}x{min_height})")
+                    return []
             
             # Aumentar tamaño para mejor OCR
             target_height = 100   # Altura aumentada para mejor OCR
