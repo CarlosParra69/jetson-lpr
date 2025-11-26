@@ -157,9 +157,7 @@ class RealtimeLPRSystem:
         self.recent_detections = []  # Detecciones recientes con timestamp
         self.recent_plate_variations = {}  # Para detectar variaciones incorrectas del OCR
         self.display_detections = []  # Detecciones para mostrar (con expiración)
-        self.pending_enhanced_detections = {}  # Detecciones pendientes de análisis mejorado
-        self.frozen_frames = {}  # Frames congelados para análisis mejorado
-        self.enhanced_detection_lock = threading.Lock()  # Lock para detecciones mejoradas
+        # Funcionalidad de detección mejorada eliminada - mostrar detecciones inmediatamente
         
         # Sistema de agrupación inteligente de detecciones
         self.detection_groups = {}  # Agrupa detecciones similares por vehículo
@@ -304,10 +302,8 @@ class RealtimeLPRSystem:
                 "min_plate_width_px": 25,        # Ancho mínimo muy reducido para detectar placas muy lejanas
                 "min_plate_height_px": 10,       # Altura mínima muy reducida para detectar placas muy lejanas
                 "distance_filter_enabled": True,  # Habilitar filtro de distancia pero con rango amplio
-                "detection_display_timeout_sec": 10.0,  # Tiempo aumentado para ver detecciones más tiempo
-                "enhanced_detection_enabled": True,    # Habilitar detección mejorada con zoom
-                "freeze_frame_sec": 2.0,               # Tiempo para mejor estabilización
-                "enhanced_ocr_confidence_min": 0.70,   # Confianza mínima OCR aumentada para mejor precisión
+                "detection_display_timeout_sec": 15.0,  # Tiempo aumentado para ver múltiples detecciones
+                "enhanced_detection_enabled": False,   # Deshabilitado - mostrar detecciones inmediatamente
                 "colombian_plate_optimization": True,  # Optimización específica para placas colombianas
                 "color_detection_enabled": False,      # Deshabilitar filtro de color (más permisivo)
                 "preprocess_aggressive": True,         # Preprocesamiento agresivo
@@ -806,17 +802,25 @@ class RealtimeLPRSystem:
                         color = (0, int(255 * alpha), 255)  # Amarillo
                         status_text = "PROCESANDO"
                     
-                    # Dibujar rectángulo con color según estado (línea delgada)
-                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 1)
+                    # Dibujar rectángulo con color según estado (línea más gruesa para mejor visibilidad)
+                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
                     
-                    # Texto de la placa
+                    # Texto de la placa (más grande y visible)
                     plate_text = detection['plate_text']
-                    cv2.putText(display_frame, plate_text, (x1, y1-10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                    font_scale = 0.6
+                    font_thickness = 2
+                    (text_width, text_height), baseline = cv2.getTextSize(plate_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
                     
-                    # Mostrar estado debajo de la placa
-                    cv2.putText(display_frame, status_text, (x1, y2+20), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
+                    # Fondo semitransparente para el texto
+                    cv2.rectangle(display_frame, (x1, y1-text_height-5), (x1+text_width+5, y1+5), (0, 0, 0), -1)
+                    cv2.putText(display_frame, plate_text, (x1+2, y1-2), 
+                               cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, font_thickness)
+                    
+                    # Mostrar estado debajo de la placa (más pequeño)
+                    (status_width, status_height), _ = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                    cv2.rectangle(display_frame, (x1, y2+2), (x1+status_width+5, y2+status_height+8), (0, 0, 0), -1)
+                    cv2.putText(display_frame, status_text, (x1+2, y2+status_height+5), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
         
         return display_frame
     
@@ -1091,9 +1095,7 @@ class RealtimeLPRSystem:
             if 'saved_to_db' not in best_detection:
                 best_detection['saved_to_db'] = False
             
-            self.logger.info(f"[GROUP] Mejor detección seleccionada: {best_detection['plate_text']} "
-                           f"(Score: {best_score:.3f}, OCR: {best_detection.get('ocr_confidence', 0):.2f}, "
-                           f"Distancia: {best_detection.get('estimated_distance_m', 0):.1f}m)")
+            # No loguear aquí - solo mostrar placa final en finalize_detection
             
             return best_detection
     
@@ -1180,12 +1182,7 @@ class RealtimeLPRSystem:
             # Crear timestamp
             timestamp = datetime.now()
             
-            # Log de inicio de finalización
-            plate_text = detection.get('plate_text', 'UNKNOWN')
-            self.logger.info(f"[FINALIZE] Finalizando mejor detección: {plate_text} "
-                           f"(OCR: {detection.get('ocr_confidence', 0):.2f}, "
-                           f"YOLO: {detection.get('yolo_confidence', 0):.2f})")
-            
+            # No loguear aquí - solo en finalize_detection para mostrar placa final
             # Procesar directamente sin bloqueos - simplificado
             self.finalize_detection(detection, frame, timestamp)
                 
@@ -1361,20 +1358,20 @@ class RealtimeLPRSystem:
                                 self.display_detections.append(display_detection)
                                 self.active_detections.append(display_detection)
                                 
-                                # Mantener solo últimas 10 detecciones para display
-                                if len(self.display_detections) > 10:
-                                    self.display_detections = self.display_detections[-10:]
-                                if len(self.active_detections) > 10:
-                                    self.active_detections = self.active_detections[-10:]
+                                # Mantener hasta 20 detecciones para mostrar múltiples en el stream
+                                if len(self.display_detections) > 20:
+                                    self.display_detections = self.display_detections[-20:]
+                                if len(self.active_detections) > 20:
+                                    self.active_detections = self.active_detections[-20:]
                                 
-                                self.logger.info(f"[GROUP] Detección agregada al grupo {group_id}: {text} "
-                                               f"(OCR: {ocr_conf:.2f}, Distancia: {estimated_distance:.1f}m)")
+                                # Solo loguear en modo debug - no mostrar en terminal todas las detecciones
+                                # self.logger.debug(f"[GROUP] Detección agregada al grupo {group_id}: {text} "
+                                #                f"(OCR: {ocr_conf:.2f}, Distancia: {estimated_distance:.1f}m)")
                                 
                                 # Si la confianza es muy alta, procesar inmediatamente sin esperar agrupación
                                 # Solo si cumple validación estricta y tiene alta confianza
                                 if ocr_conf >= 0.65 and is_valid_license_plate(text) and len(text) >= 5:
                                     # Procesar inmediatamente si la confianza es alta y formato válido
-                                    self.logger.info(f"[FAST] Procesando inmediatamente placa de alta confianza: {text} (OCR: {ocr_conf:.2f})")
                                     try:
                                         # Actualizar estado en display antes de finalizar
                                         for det in self.display_detections:
@@ -1559,226 +1556,7 @@ class RealtimeLPRSystem:
             self.logger.debug(f"[OCR] Error en lectura de placa: {e}")
             return []
     
-    def initiate_enhanced_detection(self, frame, bbox, initial_text, initial_ocr_conf, yolo_conf, 
-                                   estimated_distance, timestamp, timestamp_float):
-        """
-        Iniciar detección mejorada: Congelar frame -> Zoom -> Análisis mejorado
-        """
-        def enhanced_detection_thread():
-            try:
-                x1, y1, x2, y2 = bbox
-                detection_id = f"{timestamp_float}_{x1}_{y1}"
-                
-                with self.enhanced_detection_lock:
-                    # Guardar frame congelado
-                    self.frozen_frames[detection_id] = {
-                        'frame': frame.copy(),
-                        'bbox': bbox,
-                        'initial_text': initial_text,
-                        'initial_ocr_conf': initial_ocr_conf,
-                        'yolo_conf': yolo_conf,
-                        'estimated_distance': estimated_distance,
-                        'timestamp': timestamp,
-                        'freeze_time': timestamp_float
-                    }
-                
-                freeze_sec = self.config["processing"].get("freeze_frame_sec", 2.0)
-                self.logger.info(f"[ENHANCED] Congelando frame por {freeze_sec}s para placa {initial_text}")
-                
-                # Esperar tiempo de congelación
-                time.sleep(freeze_sec)
-                
-                # Control PTZ: Zoom automático hacia la placa
-                if self.ptz_controller and self.config.get("ptz", {}).get("auto_focus", False):
-                    try:
-                        frame_height, frame_width = frame.shape[:2]
-                        zoom_level = self.config["ptz"].get("zoom_level", 0.8)
-                        
-                        self.logger.info(f"[PTZ] Moviendo cámara y aplicando zoom hacia placa {initial_text}")
-                        # Usar zoom más agresivo para mejor detección
-                        aggressive_zoom = min(0.9, zoom_level + 0.1)  # Aumentar zoom ligeramente
-                        self.ptz_controller.focus_on_plate(
-                            bbox=bbox,
-                            frame_width=frame_width,
-                            frame_height=frame_height,
-                            zoom_level=aggressive_zoom,
-                            restore_after=3.0  # Más tiempo para análisis
-                        )
-                        
-                        # Esperar a que el zoom se aplique completamente
-                        time.sleep(2.0)  # Más tiempo para que la cámara se estabilice
-                    except Exception as e:
-                        self.logger.warning(f"[WARN] Error en PTZ: {e}")
-                
-                # Obtener frame congelado para análisis mejorado
-                with self.enhanced_detection_lock:
-                    if detection_id in self.frozen_frames:
-                        frozen_data = self.frozen_frames[detection_id]
-                        frozen_frame = frozen_data['frame']
-                        frozen_bbox = frozen_data['bbox']
-                        
-                        # Extraer ROI del frame congelado y ampliarlo para análisis mejorado
-                        fx1, fy1, fx2, fy2 = frozen_bbox
-                        # Agregar margen alrededor del bbox
-                        margin = 20
-                        fx1 = max(0, fx1 - margin)
-                        fy1 = max(0, fy1 - margin)
-                        fx2 = min(frozen_frame.shape[1], fx2 + margin)
-                        fy2 = min(frozen_frame.shape[0], fy2 + margin)
-                        
-                        enhanced_roi = frozen_frame[fy1:fy2, fx1:fx2]
-                        
-                        # Análisis OCR mejorado con preprocesamiento
-                        enhanced_texts = self.enhanced_ocr_analysis(enhanced_roi)
-                        
-                        # Seleccionar mejor resultado
-                        best_text = initial_text
-                        best_conf = initial_ocr_conf
-                        
-                        for enhanced_text in enhanced_texts:
-                            if enhanced_text['confidence'] > best_conf:
-                                best_text = enhanced_text['text']
-                                best_conf = enhanced_text['confidence']
-                        
-                        # Validar que el texto mejorado sea válido
-                        min_enhanced_conf = self.config["processing"].get("enhanced_ocr_confidence_min", 0.65)
-                        
-                        if best_conf >= min_enhanced_conf and is_valid_license_plate(best_text):
-                            # Usar texto mejorado
-                            final_text = best_text
-                            final_conf = best_conf
-                            self.logger.info(f"[ENHANCED] Placa mejorada: {initial_text} -> {final_text} "
-                                           f"(OCR: {initial_ocr_conf:.2f} -> {final_conf:.2f})")
-                        else:
-                            # Si el texto mejorado no es mejor, usar el inicial si cumple umbral ultra-agresivo
-                            if initial_ocr_conf >= 0.70:  # Umbral más alto para aceptar detección inicial
-                                final_text = initial_text
-                                final_conf = initial_ocr_conf
-                                self.logger.info(f"[ENHANCED] Manteniendo detección inicial: {final_text} "
-                                               f"(OCR: {final_conf:.2f})")
-                            else:
-                                min_enhanced_conf = self.config["processing"].get("enhanced_ocr_confidence_min", 0.75)
-                                self.logger.warning(f"[ENHANCED] Rechazando placa: confianza insuficiente "
-                                                   f"(inicial: {initial_ocr_conf:.2f}, mejorada: {best_conf:.2f}, "
-                                                   f"mínimo requerido: {min_enhanced_conf:.2f})")
-                                # Agregar a display como error (rojo) brevemente
-                                error_detection = {
-                                    'plate_text': initial_text,
-                                    'bbox': frozen_bbox,
-                                    'status': 'error',
-                                    'saved_to_db': False,
-                                    'display_time': time.time(),
-                                    'ocr_confidence': initial_ocr_conf,
-                                    'enhanced_ocr_confidence': best_conf
-                                }
-                                self.display_detections.append(error_detection)
-                                if len(self.display_detections) > 5:
-                                    self.display_detections = self.display_detections[-5:]
-                                del self.frozen_frames[detection_id]
-                                return
-                        
-                        # Crear detección final
-                        final_detection = {
-                            'timestamp': timestamp.isoformat(),
-                            'frame_number': self.capture_frame_count,
-                            'ai_frame_number': self.ai_processed_frames,
-                            'plate_text': final_text,
-                            'yolo_confidence': yolo_conf,
-                            'ocr_confidence': final_conf,
-                            'initial_ocr_confidence': initial_ocr_conf,
-                            'bbox': frozen_bbox,
-                            'estimated_distance_m': round(estimated_distance, 2),
-                            'processing_latency_ms': int((time.time() - timestamp_float) * 1000),
-                            'enhanced': True,
-                            'valid': True,
-                            'status': 'confirmed',  # Estado confirmado
-                            'saved_to_db': False  # Se establecerá después de guardar
-                        }
-                        
-                        # Finalizar y guardar
-                        self.finalize_detection(final_detection, frozen_frame, timestamp)
-                        
-                        # Limpiar
-                        del self.frozen_frames[detection_id]
-                        
-            except Exception as e:
-                self.logger.error(f"[ERROR] Error en detección mejorada: {e}")
-                import traceback
-                self.logger.error(traceback.format_exc())
-        
-        # Ejecutar en thread separado
-        thread = threading.Thread(target=enhanced_detection_thread, daemon=True)
-        thread.start()
-        return thread
-    
-    def enhanced_ocr_analysis(self, roi):
-        """
-        Análisis OCR mejorado con preprocesamiento avanzado
-        """
-        try:
-            if roi.size == 0:
-                return []
-            
-            # Ampliar ROI para mejor análisis
-            scale_factor = 3.0  # Ampliar 3x
-            h, w = roi.shape[:2]
-            new_h, new_w = int(h * scale_factor), int(w * scale_factor)
-            enlarged_roi = cv2.resize(roi, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-            
-            # Preprocesamiento mejorado
-            if len(enlarged_roi.shape) == 3:
-                gray = cv2.cvtColor(enlarged_roi, cv2.COLOR_BGR2GRAY)
-            else:
-                gray = enlarged_roi
-            
-            # Múltiples técnicas de preprocesamiento
-            processed_images = []
-            
-            # 1. Bilateral filter
-            bilateral = cv2.bilateralFilter(gray, 5, 50, 50)
-            processed_images.append(bilateral)
-            
-            # 2. OTSU threshold
-            _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            processed_images.append(otsu)
-            
-            # 3. Adaptive threshold
-            adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                           cv2.THRESH_BINARY, 11, 2)
-            processed_images.append(adaptive)
-            
-            # 4. Original
-            processed_images.append(gray)
-            
-            # Probar OCR en todas las versiones procesadas
-            all_texts = []
-            for processed_img in processed_images:
-                try:
-                    ocr_results = self.ocr_reader.readtext(processed_img)
-                    for (bbox, text, confidence) in ocr_results:
-                        if confidence > 0.3 and len(text.strip()) > 2:
-                            cleaned_text = re.sub(r'[^A-Z0-9]', '', text.upper())
-                            if len(cleaned_text) >= 3:
-                                all_texts.append({
-                                    'text': cleaned_text,
-                                    'confidence': confidence
-                                })
-                except:
-                    continue
-            
-            # Retornar textos únicos ordenados por confianza
-            unique_texts = {}
-            for text_data in all_texts:
-                text = text_data['text']
-                conf = text_data['confidence']
-                if text not in unique_texts or conf > unique_texts[text]['confidence']:
-                    unique_texts[text] = text_data
-            
-            return sorted(unique_texts.values(), key=lambda x: x['confidence'], reverse=True)
-            
-        except Exception as e:
-            self.logger.warning(f"[WARN] Error en OCR mejorado: {e}")
-            return []
+    # Funcionalidad de detección mejorada eliminada - mostrar detecciones inmediatamente
     
     def finalize_detection(self, detection, frame, timestamp):
         """Finalizar y guardar detección"""
@@ -1811,10 +1589,11 @@ class RealtimeLPRSystem:
             if len(self.active_detections) > 10:
                 self.active_detections = self.active_detections[-10:]
             
-            # Log final
+            # Log final - SOLO mostrar en terminal la placa final confirmada
             self.detections_count += 1
             plate_text = detection['plate_text']
-            self.logger.info(f"[TARGET] ✅ PLACA FINAL CONFIRMADA: {plate_text} "
+            # Solo loguear placas finales confirmadas (no todas las detecciones intermedias)
+            self.logger.info(f"[TARGET] ✅ PLACA FINAL: {plate_text} "
                            f"(YOLO: {detection['yolo_confidence']:.2f}, "
                            f"OCR: {detection['ocr_confidence']:.2f}, "
                            f"Distancia: {detection['estimated_distance_m']:.1f}m)")
@@ -1967,8 +1746,7 @@ class RealtimeLPRSystem:
         self.bbox_cooldown.clear()
         self.recent_detections.clear()
         self.display_detections.clear()
-        self.frozen_frames.clear()
-        self.pending_enhanced_detections.clear()
+        self.active_detections.clear()
         self.logger.info("[CLEAR] Cache limpiado")
     
     def save_screenshot(self, frame):
