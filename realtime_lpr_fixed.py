@@ -163,7 +163,7 @@ class RealtimeLPRSystem:
         
         # Sistema de agrupación inteligente de detecciones
         self.detection_groups = {}  # Agrupa detecciones similares por vehículo
-        self.group_timeout_sec = 2.0  # Tiempo de 2 segundos para procesar grupos
+        self.group_timeout_sec = 0.3  # Tiempo reducido a 0.3 segundos para validación rápida
         self.group_lock = threading.Lock()  # Lock para grupos de detecciones
         self.processing_groups = set()  # Grupos que están siendo procesados para evitar duplicados
         self.active_detections = []  # Detecciones activas para mostrar inmediatamente
@@ -318,7 +318,10 @@ class RealtimeLPRSystem:
                 "multiple_detection_validation": True,  # Validación mejorada para múltiples detecciones
                 "min_validations_for_confirmation": 1,   # Mínimo de validaciones (1 para detección rápida)
                 "process_ocr_async": True,              # Procesar OCR en paralelo sin bloquear
-                "show_low_confidence_detections": True   # Mostrar detecciones de baja confianza
+                "show_low_confidence_detections": True,   # Mostrar detecciones de baja confianza
+                "fast_validation_enabled": True,         # Validación rápida habilitada
+                "validation_timeout_sec": 0.2,          # Timeout de validación muy corto (0.2 segundos)
+                "immediate_validation_threshold": 0.60   # Si OCR >= 0.60, validar inmediatamente sin agrupación
             },
             "database": {
                 "enabled": True,
@@ -864,8 +867,8 @@ class RealtimeLPRSystem:
                             # Dibujar rectángulo YOLO (más grueso para mejor visibilidad)
                             cv2.rectangle(display_frame, (x1, y1), (x2, y2), yolo_color, thickness)
                             
-                            # Mostrar confianza YOLO con fondo para mejor legibilidad
-                            conf_text = f"YOLO: {conf:.2f}"
+                            # Mostrar confianza PLACA con fondo para mejor legibilidad
+                            conf_text = f"PLACA: {conf:.2f}"
                             (text_width, text_height), baseline = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
                             cv2.rectangle(display_frame, (x1, y1-text_height-8), (x1+text_width+4, y1+2), (0, 0, 0), -1)
                             cv2.putText(display_frame, conf_text, (x1+2, y1-4), 
@@ -1162,12 +1165,33 @@ class RealtimeLPRSystem:
             if not detections:
                 return None
             
+            # VALIDACIÓN RÁPIDA: Procesar inmediatamente si hay alta confianza
+            immediate_threshold = self.config["processing"].get("immediate_validation_threshold", 0.60)
+            fast_validation = self.config["processing"].get("fast_validation_enabled", True)
+            
+            # Si hay detecciones con alta confianza, validar inmediatamente
+            if fast_validation:
+                for det in detections:
+                    ocr_conf = det.get('ocr_confidence', 0)
+                    text = det.get('plate_text', '')
+                    if ocr_conf >= immediate_threshold and is_valid_license_plate(text):
+                        # Validar inmediatamente sin esperar más detecciones
+                        det['validation_count'] = 1
+                        det['total_detections'] = len(detections)
+                        if 'status' not in det:
+                            det['status'] = 'confirmed'
+                        if 'saved_to_db' not in det:
+                            det['saved_to_db'] = False
+                        return det
+            
             # VALIDACIÓN MÚLTIPLE: Requiere mínimo de detecciones similares (reducido para velocidad)
             min_validations = self.config["processing"].get("min_validations_for_confirmation", 1)
-            # Si solo hay 1 detección y tiene alta confianza, aceptarla inmediatamente
+            # Si solo hay 1 detección y tiene confianza aceptable, aceptarla inmediatamente
             if len(detections) == 1:
                 single_det = detections[0]
-                if single_det.get('ocr_confidence', 0) >= 0.60 and is_valid_license_plate(single_det.get('plate_text', '')):
+                ocr_conf = single_det.get('ocr_confidence', 0)
+                text = single_det.get('plate_text', '')
+                if ocr_conf >= 0.45 and is_valid_license_plate(text):
                     single_det['validation_count'] = 1
                     single_det['total_detections'] = 1
                     if 'status' not in single_det:
@@ -1176,8 +1200,30 @@ class RealtimeLPRSystem:
                         single_det['saved_to_db'] = False
                     return single_det
             
+            # Si hay pocas detecciones pero con buena confianza, aceptar de todas formas
+            if len(detections) >= 1:
+                best_single = max(detections, key=lambda d: d.get('ocr_confidence', 0))
+                if best_single.get('ocr_confidence', 0) >= 0.50 and is_valid_license_plate(best_single.get('plate_text', '')):
+                    best_single['validation_count'] = len(detections)
+                    best_single['total_detections'] = len(detections)
+                    if 'status' not in best_single:
+                        best_single['status'] = 'confirmed'
+                    if 'saved_to_db' not in best_single:
+                        best_single['saved_to_db'] = False
+                    return best_single
+            
             if len(detections) < min_validations:
-                # No hay suficientes validaciones, esperar más detecciones
+                # No hay suficientes validaciones, pero si hay al menos 1 con buena confianza, aceptarla
+                if len(detections) >= 1:
+                    best = max(detections, key=lambda d: d.get('ocr_confidence', 0))
+                    if best.get('ocr_confidence', 0) >= 0.40:
+                        best['validation_count'] = 1
+                        best['total_detections'] = len(detections)
+                        if 'status' not in best:
+                            best['status'] = 'confirmed'
+                        if 'saved_to_db' not in best:
+                            best['saved_to_db'] = False
+                        return best
                 return None
             
             # Agrupar detecciones por texto similar (normalizado)
@@ -1281,11 +1327,12 @@ class RealtimeLPRSystem:
                 start_time = group_data.get('start_time', 0)
                 last_update = group_data.get('last_update', 0)
                 
-                # Procesar grupos más rápido: 0.3 segundos sin actualizaciones
-                if (current_time - last_update) >= self.group_timeout_sec:
+                # Procesar grupos MUY rápido: timeout reducido para validación instantánea
+                validation_timeout = self.config["processing"].get("validation_timeout_sec", 0.2)
+                if (current_time - last_update) >= validation_timeout:
                     groups_to_process.append(group_id)
-                # Si el grupo es muy antiguo (más de 2 segundos), eliminarlo sin procesar
-                elif (current_time - start_time) > 2.0:
+                # Si el grupo es muy antiguo (más de 1 segundo), eliminarlo sin procesar
+                elif (current_time - start_time) > 1.0:
                     groups_to_remove.append(group_id)
         
         # Procesar grupos en thread separado para no bloquear
@@ -1587,7 +1634,11 @@ class RealtimeLPRSystem:
                                 
                                 # Si la confianza es alta, procesar inmediatamente sin esperar agrupación
                                 # Umbral reducido para procesamiento más rápido
-                                if ocr_conf >= 0.50 and is_valid_license_plate(text) and len(text) >= 5:
+                                immediate_threshold = self.config["processing"].get("immediate_validation_threshold", 0.60)
+                                fast_validation = self.config["processing"].get("fast_validation_enabled", True)
+                                
+                                # Validación rápida: si OCR >= umbral, validar inmediatamente
+                                if fast_validation and ocr_conf >= immediate_threshold and is_valid_license_plate(text) and len(text) >= 5:
                                     # Procesar inmediatamente si la confianza es alta y formato válido
                                     try:
                                         # Actualizar estado en display antes de finalizar
@@ -1597,14 +1648,47 @@ class RealtimeLPRSystem:
                                         for det in self.active_detections:
                                             if det.get('plate_text') == text and det.get('display_time') == current_time_float:
                                                 det['status'] = 'confirmed'
+                                        
+                                        # Marcar como validada inmediatamente
+                                        detection['validation_count'] = 1
+                                        detection['total_detections'] = 1
+                                        detection['status'] = 'confirmed'
+                                        
                                         self.finalize_detection(detection, frame, current_time)
                                     except Exception as e:
                                         self.logger.error(f"[ERROR] Error procesando inmediatamente: {e}")
+                                # Si la confianza es media-alta (0.50-0.60), también procesar rápidamente
+                                elif ocr_conf >= 0.50 and is_valid_license_plate(text) and len(text) >= 5:
+                                    # Procesar rápidamente con confianza media-alta
+                                    try:
+                                        detection['validation_count'] = 1
+                                        detection['total_detections'] = 1
+                                        detection['status'] = 'confirmed'
+                                        self.finalize_detection(detection, frame, current_time)
+                                    except Exception as e:
+                                        self.logger.debug(f"[FAST] Error en validación rápida media: {e}")
             
-            # Limpiar grupos expirados y procesar los listos (más frecuente para detección rápida)
+            # Limpiar grupos expirados y procesar los listos (MUY frecuente para validación instantánea)
             # Limpiar cada frame para máxima velocidad
             if self.ai_processed_frames % 1 == 0:
                 self.cleanup_expired_groups()
+            
+            # Procesar validación rápida inmediatamente si hay detecciones con alta confianza
+            fast_validation = self.config["processing"].get("fast_validation_enabled", True)
+            if fast_validation and detections:
+                immediate_threshold = self.config["processing"].get("immediate_validation_threshold", 0.60)
+                for detection in detections:
+                    ocr_conf = detection.get('ocr_confidence', 0)
+                    text = detection.get('plate_text', '')
+                    if ocr_conf >= immediate_threshold and is_valid_license_plate(text):
+                        # Validar y finalizar inmediatamente sin esperar agrupación
+                        try:
+                            detection['status'] = 'confirmed'
+                            detection['validation_count'] = 1
+                            detection['total_detections'] = 1
+                            self.finalize_detection(detection, frame, current_time)
+                        except Exception as e:
+                            self.logger.debug(f"[FAST] Error en validación rápida: {e}")
             
             return detections
             
