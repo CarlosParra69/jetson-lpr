@@ -1,0 +1,871 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[spanish]{babel}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{multirow}
+
+% Configuración de página según APA 7ma edición
+\geometry{
+    left=2.54cm,
+    right=2.54cm,
+    top=2.54cm,
+    bottom=2.54cm
+}
+
+% Configuración de encabezados y pies de página
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small Manual de Usuario - Sistema LPR}
+\fancyhead[R]{\small \thepage}
+\fancyfoot[C]{\small SENA - Centro Industrial de Mantenimiento y Manufactura (CIMM)}
+
+% Configuración de títulos según APA
+\titleformat{\section}
+{\normalfont\fontsize{12}{14}\bfseries}
+{\thesection}{1em}{}
+\titlespacing*{\section}{0pt}{12pt}{6pt}
+
+\titleformat{\subsection}
+{\normalfont\fontsize{12}{14}\bfseries}
+{\thesubsection}{1em}{}
+\titlespacing*{\subsection}{0pt}{12pt}{6pt}
+
+% Configuración de código
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{green!60!black},
+    stringstyle=\color{red},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    stepnumber=1,
+    numbersep=5pt,
+    backgroundcolor=\color{gray!10},
+    frame=single,
+    breaklines=true,
+    breakatwhitespace=true,
+    tabsize=4,
+    showstringspaces=false
+}
+
+% Información del documento
+\title{
+    \vspace{-2cm}
+    \includegraphics[width=0.3\textwidth]{logo_sena.png} % Reemplazar con logo real
+    \vspace{1cm}
+    \\
+    \Large Manual de Usuario\\
+    \large Sistema de Reconocimiento Automático de Placas Vehiculares (LPR)\\
+    \large Optimizado para Jetson Orin Nano
+}
+\author{
+    Servicio Nacional de Aprendizaje (SENA)\\
+    Centro Industrial de Mantenimiento y Manufactura (CIMM)\\
+    Tecnologías Virtuales
+}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+\newpage
+
+% Tabla de contenidos
+\tableofcontents
+\newpage
+
+% Lista de figuras
+\listoffigures
+\newpage
+
+% Lista de tablas
+\listoftables
+\newpage
+
+% ============================================
+% 1. INTRODUCCIÓN
+% ============================================
+\section{Introducción}
+
+\subsection{Justificación del Proyecto}
+
+El reconocimiento automático de placas vehiculares (LPR, por sus siglas en inglés \textit{License Plate Recognition}) representa una tecnología fundamental en sistemas de seguridad, control de acceso y gestión de estacionamientos. En el contexto del Servicio Nacional de Aprendizaje (SENA), la implementación de un sistema LPR optimizado para dispositivos de borde como el Jetson Orin Nano permite desarrollar soluciones de inteligencia artificial accesibles y eficientes.
+
+Este proyecto se justifica por las siguientes razones:
+
+\begin{enumerate}
+    \item \textbf{Necesidad de automatización}: La identificación manual de placas vehiculares es propensa a errores humanos y requiere recursos significativos de personal.
+    
+    \item \textbf{Seguridad y control de acceso}: Un sistema LPR automatizado mejora la seguridad en instalaciones al permitir el registro y verificación automática de vehículos autorizados.
+    
+    \item \textbf{Optimización de recursos}: El uso de dispositivos de borde como el Jetson Orin Nano permite procesamiento local sin dependencia de servicios en la nube, reduciendo costos operativos y latencia.
+    
+    \item \textbf{Desarrollo de competencias}: Este proyecto contribuye al desarrollo de competencias en inteligencia artificial, visión por computadora y sistemas embebidos en el contexto educativo del SENA.
+    
+    \item \textbf{Escalabilidad}: La solución puede adaptarse a diferentes entornos, desde estacionamientos pequeños hasta sistemas de control de acceso más complejos.
+\end{enumerate}
+
+\subsection{Objetivos}
+
+\subsubsection{Objetivo General}
+Desarrollar e implementar un sistema de reconocimiento automático de placas vehiculares optimizado para el Jetson Orin Nano, capaz de detectar y reconocer placas en tiempo real con alta precisión.
+
+\subsubsection{Objetivos Específicos}
+\begin{itemize}
+    \item Implementar un sistema de detección de placas utilizando modelos YOLO (You Only Look Once) optimizados.
+    \item Integrar reconocimiento óptico de caracteres (OCR) para la extracción de texto de placas detectadas.
+    \item Desarrollar un sistema de validación de placas según formatos colombianos.
+    \item Optimizar el rendimiento del sistema para funcionar en tiempo real en el Jetson Orin Nano.
+    \item Integrar el sistema con base de datos para registro y gestión de vehículos.
+\end{itemize}
+
+\subsection{Alcance del Proyecto}
+
+Este manual documenta el sistema LPR desarrollado para el SENA, incluyendo:
+\begin{itemize}
+    \item Instalación y configuración del sistema
+    \item Funcionamiento de los componentes principales
+    \item Ejecución del sistema en Ubuntu
+    \item Optimizaciones para Jetson Orin Nano
+    \item Solución de problemas comunes
+\end{itemize}
+
+% ============================================
+% 2. MARCO TÉCNICO
+% ============================================
+\section{Marco Técnico}
+
+\subsection{Plataforma Hardware: Jetson Orin Nano Super Developer Kit}
+
+El sistema está optimizado para funcionar en el \textbf{Jetson Orin Nano Super Developer Kit}, una plataforma de desarrollo de NVIDIA diseñada para aplicaciones de inteligencia artificial en dispositivos de borde.
+
+\subsubsection{Especificaciones Técnicas}
+
+\begin{table}[H]
+\centering
+\caption{Especificaciones del Jetson Orin Nano Super Developer Kit}
+\label{tab:jetson_specs}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Característica} & \textbf{Especificación} \\
+\midrule
+Rendimiento de IA & 40 TOPS \\
+GPU & Arquitectura NVIDIA Ampere \\
+Núcleos GPU & 1024 núcleos CUDA \\
+Núcleos Tensor & 32 núcleos Tensor \\
+Frecuencia máxima & 625 MHz \\
+Potencia configurable & 7 W - 15 W \\
+Memoria & 8 GB o 4 GB (según versión) \\
+Rendimiento vs. Jetson Nano & Hasta 80x más rápido \\
+Precio & \$249 USD \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Características Principales}
+
+El Jetson Orin Nano Super Developer Kit está diseñado para desarrolladores, aficionados y estudiantes, proporcionando una plataforma potente para entrenar y perfeccionar herramientas de IA generativa, agentes y robots. Además, los propietarios de los modelos Jetson Orin NX y Orin Nano pueden lograr un rendimiento superior con una actualización de software.
+
+La serie Jetson Orin Nano establece un nuevo estándar para crear robots básicos con tecnología de IA, drones inteligentes y cámaras inteligentes. Los módulos ofrecen hasta 40 TOPS de rendimiento de IA en el formato más pequeño de Jetson, proporcionando hasta 80 veces el rendimiento del NVIDIA Jetson Nano original.
+
+\subsection{Arquitectura del Sistema}
+
+El sistema LPR está compuesto por los siguientes componentes principales:
+
+\begin{enumerate}
+    \item \textbf{Módulo de Detección}: Utiliza modelos YOLO (YOLOv8/YOLOv11) para detectar placas vehiculares en imágenes.
+    \item \textbf{Módulo de OCR}: Emplea EasyOCR para el reconocimiento óptico de caracteres en las placas detectadas.
+    \item \textbf{Módulo de Validación}: Valida el formato de las placas según estándares colombianos.
+    \item \textbf{Módulo de Base de Datos}: Gestiona el almacenamiento y consulta de información de vehículos.
+    \item \textbf{Módulo de Control PTZ}: Controla cámaras PTZ (Pan-Tilt-Zoom) para seguimiento automático.
+\end{enumerate}
+
+% ============================================
+% 3. INSTALACIÓN DEL SISTEMA
+% ============================================
+\section{Instalación del Sistema}
+
+\subsection{Requisitos Previos}
+
+\subsubsection{Requisitos de Hardware}
+\begin{itemize}
+    \item Jetson Orin Nano Super Developer Kit (8 GB recomendado)
+    \item Cámara IP con soporte RTSP o USB
+    \item Almacenamiento: mínimo 32 GB (SSD o microSD)
+    \item Conexión de red: Gigabit Ethernet
+    \item Fuente de alimentación: 15W o superior
+\end{itemize}
+
+\subsubsection{Requisitos de Software}
+\begin{itemize}
+    \item Sistema operativo: Ubuntu 20.04 o superior
+    \item Python 3.8 o superior
+    \item CUDA Toolkit (incluido en JetPack)
+    \item JetPack 5.x o superior
+    \item MySQL Server (opcional, para producción)
+\end{itemize}
+
+\subsection{Instalación de Dependencias del Sistema}
+
+Antes de instalar el sistema LPR, es necesario instalar las dependencias del sistema operativo:
+
+\begin{lstlisting}[language=bash, caption=Instalación de dependencias del sistema]
+sudo apt update
+sudo apt install -y \
+    python3-dev python3-pip python3-setuptools \
+    build-essential cmake git \
+    libopencv-dev python3-opencv \
+    libmysqlclient-dev \
+    ffmpeg libavcodec-dev libavformat-dev \
+    libswscale-dev libavutil-dev
+\end{lstlisting}
+
+\subsection{Instalación de Python y Entorno Virtual}
+
+Se recomienda utilizar un entorno virtual de Python para aislar las dependencias:
+
+\begin{lstlisting}[language=bash, caption=Creación de entorno virtual]
+cd ~/Desktop/jetson-lpr
+python3 -m venv venv
+source venv/bin/activate
+\end{lstlisting}
+
+\subsection{Instalación de Dependencias de Python}
+
+Las dependencias del proyecto se encuentran en el archivo \texttt{requirements.txt}. Para instalarlas:
+
+\begin{lstlisting}[language=bash, caption=Instalación de dependencias de Python]
+pip install --upgrade pip
+pip install -r requirements.txt
+\end{lstlisting}
+
+Las principales dependencias incluyen:
+\begin{itemize}
+    \item \texttt{ultralytics}: Framework YOLO para detección de objetos
+    \item \texttt{easyocr}: Motor de reconocimiento óptico de caracteres
+    \item \texttt{opencv-python}: Procesamiento de imágenes y video
+    \item \texttt{torch}: Framework de deep learning PyTorch
+    \item \texttt{numpy}: Computación numérica
+    \item \texttt{mysql-connector-python}: Conector para base de datos MySQL
+\end{itemize}
+
+\subsection{Configuración de Base de Datos}
+
+\subsubsection{Instalación de MySQL}
+
+Para sistemas de producción, se recomienda utilizar MySQL:
+
+\begin{lstlisting}[language=bash, caption=Instalación de MySQL]
+sudo apt install mysql-server
+sudo mysql_secure_installation
+\end{lstlisting}
+
+\subsubsection{Creación de Base de Datos}
+
+Crear la base de datos y usuario para el sistema LPR:
+
+\begin{lstlisting}[language=bash, caption=Configuración de base de datos]
+sudo mysql -u root -p
+\end{lstlisting}
+
+\begin{lstlisting}[language=sql, caption=Creación de base de datos y usuario]
+CREATE DATABASE parqueadero_jetson;
+CREATE USER 'lpr_user'@'localhost' IDENTIFIED BY 'lpr_password';
+GRANT ALL PRIVILEGES ON parqueadero_jetson.* TO 'lpr_user'@'localhost';
+FLUSH PRIVILEGES;
+EXIT;
+\end{lstlisting}
+
+\subsection{Configuración de Permisos Sudo}
+
+Para que el sistema pueda configurar la red automáticamente sin solicitar contraseña, se debe configurar sudo:
+
+\begin{lstlisting}[language=bash, caption=Configuración de sudo sin contraseña]
+./configurar_sudo.sh
+\end{lstlisting}
+
+Este script agrega una entrada en \texttt{/etc/sudoers.d/} para permitir la ejecución de comandos de red sin contraseña.
+
+\subsection{Instalación de Acceso Directo en Desktop}
+
+Para facilitar la ejecución del sistema, se puede instalar un acceso directo en el escritorio:
+
+\begin{lstlisting}[language=bash, caption=Instalación de acceso directo]
+./INSTALAR_DESKTOP.sh
+\end{lstlisting}
+
+Este script copia los archivos necesarios al escritorio y configura los permisos de ejecución.
+
+% ============================================
+% 4. ESTRUCTURA Y FUNCIONAMIENTO DEL PROYECTO
+% ============================================
+\section{Estructura y Funcionamiento del Proyecto}
+
+\subsection{Estructura de Directorios}
+
+El proyecto está organizado en la siguiente estructura:
+
+\begin{lstlisting}[language=bash, caption=Estructura del proyecto]
+jetson-lpr/
+├── realtime_lpr_fixed.py      # Script principal del sistema
+├── iniciar_lpr.sh              # Script de inicio
+├── INICIAR_LPR.desktop         # Acceso directo para Desktop
+├── INSTALAR_DESKTOP.sh         # Instalador de acceso directo
+├── configurar_sudo.sh          # Configurador de permisos sudo
+│
+├── ptz_controller.py           # Controlador de cámaras PTZ
+├── plate_validator.py          # Validador de formatos de placas
+├── util.py                     # Funciones utilitarias
+├── visualize.py                # Visualización de resultados
+│
+├── license_plate_detector.pt   # Modelo YOLO para detección
+├── yolo11n.pt                  # Modelo YOLO11 nano
+├── yolov8n.pt                  # Modelo YOLOv8 nano
+│
+├── config/                     # Carpeta de configuración
+│   └── ptz_config.json         # Configuración de cámara y sistema
+│
+├── stream/                     # Módulos de streaming y BD
+│   └── database/
+│       └── db_manager.py       # Gestor de base de datos
+│
+├── requirements.txt            # Dependencias de Python
+└── logs/                       # Logs del sistema (generado automáticamente)
+\end{lstlisting}
+
+\subsection{Archivos Principales}
+
+\subsubsection{realtime\_lpr\_fixed.py}
+
+Este es el archivo principal del sistema. Contiene la lógica completa del sistema LPR, incluyendo:
+
+\begin{itemize}
+    \item \textbf{Captura de video}: Lectura de frames desde cámara IP o RTSP
+    \item \textbf{Detección YOLO}: Detección de placas vehiculares usando modelos YOLO
+    \item \textbf{Reconocimiento OCR}: Extracción de texto usando EasyOCR
+    \item \textbf{Validación}: Validación de formato de placas colombianas
+    \item \textbf{Base de datos}: Almacenamiento de detecciones en MySQL
+    \item \textbf{Visualización}: Mostrar detecciones en tiempo real
+    \item \textbf{Control PTZ}: Control automático de cámaras PTZ
+\end{itemize}
+
+El sistema utiliza procesamiento multi-hilo para optimizar el rendimiento:
+\begin{itemize}
+    \item \textbf{Thread de captura}: Captura frames de la cámara continuamente
+    \item \textbf{Thread de IA}: Procesa frames con YOLO y OCR
+    \item \textbf{Thread de display}: Muestra frames procesados en pantalla
+\end{itemize}
+
+\subsubsection{ptz\_controller.py}
+
+Módulo para control de cámaras PTZ (Pan-Tilt-Zoom). Permite:
+\begin{itemize}
+    \item Movimiento automático de la cámara hacia placas detectadas
+    \item Zoom automático para mejorar la calidad de detección
+    \item Restauración de posición después de la detección
+\end{itemize}
+
+\subsubsection{plate\_validator.py}
+
+Valida el formato de placas vehiculares según estándares colombianos:
+\begin{itemize}
+    \item Validación de longitud (mínimo 5 caracteres)
+    \item Validación de formato (letras y números)
+    \item Validación de patrones específicos colombianos
+\end{itemize}
+
+\subsubsection{stream/database/db\_manager.py}
+
+Gestiona la conexión y operaciones con la base de datos MySQL:
+\begin{itemize}
+    \item Creación automática de tablas
+    \item Inserción de detecciones
+    \item Consulta de vehículos autorizados
+    \item Gestión de logs de acceso
+\end{itemize}
+
+\subsection{Flujo de Funcionamiento}
+
+El sistema funciona siguiendo este flujo:
+
+\begin{enumerate}
+    \item \textbf{Inicialización}: El sistema carga los modelos YOLO y EasyOCR, configura la cámara y conecta a la base de datos.
+    
+    \item \textbf{Captura}: El thread de captura obtiene frames continuamente de la cámara.
+    
+    \item \textbf{Detección YOLO}: Cada frame (o cada N frames según configuración) se procesa con YOLO para detectar placas.
+    
+    \item \textbf{Extracción de ROI}: Se extrae la región de interés (ROI) de cada placa detectada.
+    
+    \item \textbf{Reconocimiento OCR}: Se aplica EasyOCR a cada ROI para extraer el texto de la placa.
+    
+    \item \textbf{Validación}: Se valida el formato del texto extraído según estándares colombianos.
+    
+    \item \textbf{Agrupación}: Las detecciones similares se agrupan para seleccionar la mejor.
+    
+    \item \textbf{Almacenamiento}: Las placas validadas se guardan en la base de datos.
+    
+    \item \textbf{Visualización}: Los cuadros de detección se muestran en tiempo real.
+    
+    \item \textbf{Control PTZ}: Si está habilitado, la cámara se mueve automáticamente hacia las placas detectadas.
+\end{enumerate}
+
+% ============================================
+% 5. EJECUCIÓN DEL PROYECTO
+% ============================================
+\section{Ejecución del Proyecto}
+
+\subsection{Requisitos Previos para la Ejecución}
+
+Antes de ejecutar el sistema, asegúrese de que:
+\begin{itemize}
+    \item Todas las dependencias estén instaladas
+    \item La base de datos MySQL esté configurada y funcionando
+    \item La cámara esté conectada y accesible
+    \item Los modelos YOLO estén en la carpeta raíz del proyecto
+\end{itemize}
+
+\subsection{Ejecución Básica}
+
+\subsubsection{Desde la Terminal}
+
+Para ejecutar el sistema desde la terminal, navegue a la carpeta del proyecto y ejecute:
+
+\begin{lstlisting}[language=bash, caption=Ejecución básica del sistema]
+cd ~/Desktop/jetson-lpr
+python realtime_lpr_fixed.py
+\end{lstlisting}
+
+\subsubsection{Usando el Script de Inicio}
+
+Alternativamente, puede usar el script de inicio proporcionado:
+
+\begin{lstlisting}[language=bash, caption=Ejecución con script]
+./iniciar_lpr.sh
+\end{lstlisting}
+
+Este script:
+\begin{itemize}
+    \item Navega automáticamente a la carpeta del proyecto
+    \item Activa el entorno virtual (si existe)
+    \item Ejecuta el sistema con la configuración adecuada
+    \item Maneja automáticamente la contraseña sudo si es necesario
+\end{itemize}
+
+\subsubsection{Desde el Acceso Directo}
+
+Si instaló el acceso directo en el escritorio:
+\begin{enumerate}
+    \item Navegue al escritorio de Ubuntu
+    \item Haga doble clic en el archivo \texttt{INICIAR\_LPR.desktop}
+    \item El sistema se ejecutará automáticamente
+\end{enumerate}
+
+\subsection{Parámetros de Ejecución}
+
+El sistema acepta varios parámetros opcionales:
+
+\begin{lstlisting}[language=bash, caption=Parámetros disponibles]
+python realtime_lpr_fixed.py [opciones]
+
+Opciones:
+  --headless          Ejecutar sin interfaz gráfica
+  --config PATH       Ruta al archivo de configuración
+  --camera URL        URL de la cámara RTSP o IP
+  --ai-every N        Procesar IA cada N frames
+  --display-scale N   Escala de visualización (0.0-1.0)
+  --help              Mostrar ayuda
+\end{lstlisting}
+
+\subsection{Configuración de la Cámara}
+
+El sistema puede trabajar con diferentes tipos de cámaras:
+
+\subsubsection{Cámara IP con RTSP}
+
+Configure la URL de la cámara en \texttt{config/ptz\_config.json}:
+
+\begin{lstlisting}[language=json, caption=Configuración de cámara RTSP]
+{
+  "camera": {
+    "source": "rtsp://usuario:contraseña@ip_camara:puerto/stream"
+  }
+}
+\end{lstlisting}
+
+\subsubsection{Cámara USB}
+
+Para cámaras USB, use el índice del dispositivo:
+
+\begin{lstlisting}[language=json, caption=Configuración de cámara USB]
+{
+  "camera": {
+    "source": 0
+  }
+}
+\end{lstlisting}
+
+\subsection{Verificación del Funcionamiento}
+
+Una vez ejecutado, el sistema mostrará:
+
+\begin{itemize}
+    \item \textbf{Ventana de video}: Muestra el stream de la cámara con cuadros de detección
+    \item \textbf{Información en pantalla}: FPS, número de detecciones, estado del sistema
+    \item \textbf{Logs en terminal}: Información detallada sobre detecciones y errores
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\textwidth]{captura_ejecucion.png}
+\caption{Ejemplo de ejecución del sistema mostrando detecciones en tiempo real}
+\label{fig:ejecucion}
+\end{figure}
+
+% ============================================
+% 6. OPTIMIZACIONES Y RENDIMIENTO
+% ============================================
+\section{Optimizaciones y Rendimiento}
+
+\subsection{Limitaciones del Jetson Orin Nano}
+
+Aunque el Jetson Orin Nano es una plataforma potente, tiene limitaciones que deben considerarse:
+
+\begin{itemize}
+    \item \textbf{Memoria limitada}: 8 GB de RAM compartida entre CPU y GPU
+    \item \textbf{Procesamiento}: Aunque tiene 40 TOPS, el procesamiento en tiempo real de múltiples streams puede ser limitante
+    \item \textbf{Térmica}: El dispositivo puede calentarse durante operaciones intensivas
+    \item \textbf{Ancho de banda}: La transferencia de datos entre CPU y GPU puede ser un cuello de botella
+\end{itemize}
+
+\subsection{Optimizaciones Implementadas}
+
+Para maximizar el rendimiento en el Jetson Orin Nano, se implementaron las siguientes optimizaciones:
+
+\subsubsection{Procesamiento Selectivo de Frames}
+
+El sistema procesa IA cada frame (configurable), pero puede ajustarse según el rendimiento:
+
+\begin{lstlisting}[language=python, caption=Configuración de procesamiento]
+"realtime_optimization": {
+    "ai_process_every": 1,  # Procesar cada frame
+    "motion_activation": False,  # Procesar siempre
+    "display_scale": 0.5  # Reducir escala para mejor rendimiento
+}
+\end{lstlisting}
+
+\subsubsection{Cooldowns Optimizados}
+
+Se implementaron cooldowns reducidos para permitir más detecciones:
+
+\begin{lstlisting}[language=python, caption=Configuración de cooldowns]
+"processing": {
+    "detection_cooldown_sec": 0.5,  # Cooldown muy reducido
+    "bbox_cooldown_sec": 0.3,  # Cooldown por ubicación
+    "group_timeout_sec": 2.0  # Tiempo de agrupación
+}
+\end{lstlisting}
+
+\subsubsection{Cache Agresivo}
+
+El sistema utiliza cache para evitar reprocesar las mismas placas:
+
+\begin{itemize}
+    \item Cache de OCR para placas similares
+    \item Cache de detecciones recientes
+    \item Limpieza automática de cache antiguo
+\end{itemize}
+
+\subsubsection{Procesamiento Multi-hilo}
+
+El sistema utiliza tres threads principales:
+\begin{itemize}
+    \item Thread de captura (baja prioridad)
+    \item Thread de IA (alta prioridad)
+    \item Thread de display (media prioridad)
+\end{itemize}
+
+\subsection{Problemas de Detección y Soluciones}
+
+\subsubsection{Detección Lenta}
+
+\textbf{Problema}: Las placas se detectan muy lentamente.
+
+\textbf{Soluciones}:
+\begin{itemize}
+    \item Reducir \texttt{ai\_process\_every} a 1
+    \item Deshabilitar \texttt{motion\_activation}
+    \item Reducir \texttt{display\_scale} a 0.5 o menos
+    \item Asegurar que el modo de potencia esté en máximo rendimiento
+\end{itemize}
+
+\subsubsection{Cuadros No Se Muestran}
+
+\textbf{Problema}: Los cuadros de detección no aparecen en el stream.
+
+\textbf{Soluciones}:
+\begin{itemize}
+    \item Verificar que \texttt{show\_yolo\_boxes\_immediately} esté en \texttt{True}
+    \item Aumentar \texttt{detection\_display\_timeout\_sec}
+    \item Verificar que el thread de display esté funcionando
+    \item Revisar logs para errores de visualización
+\end{itemize}
+
+\subsubsection{Bajo Rendimiento General}
+
+\textbf{Problema}: El sistema funciona muy lento.
+
+\textbf{Soluciones}:
+\begin{itemize}
+    \item Verificar modo de potencia: \texttt{sudo nvpmodel -m 0}
+    \item Asegurar que JetPack esté actualizado
+    \item Reducir resolución de la cámara
+    \item Usar modelo YOLO más pequeño (nano)
+    \item Deshabilitar funciones no esenciales (PTZ, visualización avanzada)
+\end{itemize}
+
+\subsubsection{Sobrecalentamiento}
+
+\textbf{Problema}: El Jetson se sobrecalienta y reduce el rendimiento.
+
+\textbf{Soluciones}:
+\begin{itemize}
+    \item Asegurar ventilación adecuada
+    \item Considerar disipador de calor adicional
+    \item Reducir frecuencia de procesamiento
+    \item Monitorear temperatura: \texttt{sudo tegrastats}
+\end{itemize}
+
+\subsection{Configuración de Rendimiento Óptimo}
+
+Para obtener el mejor rendimiento, use esta configuración:
+
+\begin{lstlisting}[language=python, caption=Configuración óptima para Jetson Orin Nano]
+"realtime_optimization": {
+    "ai_process_every": 1,
+    "motion_activation": False,
+    "display_scale": 0.5,
+    "minimal_rendering": True,
+    "fast_resize": True
+},
+"processing": {
+    "confidence_threshold": 0.35,
+    "plate_confidence_min": 0.45,
+    "detection_cooldown_sec": 0.5,
+    "bbox_cooldown_sec": 0.3,
+    "group_timeout_sec": 2.0
+}
+\end{lstlisting}
+
+% ============================================
+% 7. CAPTURAS DE PANTALLA Y EJEMPLOS
+% ============================================
+\section{Capturas de Pantalla y Ejemplos}
+
+\subsection{Ejecución del Sistema}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{captura_inicio.png}
+\caption{Pantalla de inicio del sistema mostrando la inicialización de componentes}
+\label{fig:inicio}
+\end{figure}
+
+\subsection{Detección en Tiempo Real}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{captura_deteccion.png}
+\caption{Sistema detectando placas vehiculares en tiempo real con cuadros de detección}
+\label{fig:deteccion}
+\end{figure}
+
+\subsection{Interfaz de Visualización}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{captura_interfaz.png}
+\caption{Interfaz del sistema mostrando múltiples detecciones simultáneas}
+\label{fig:interfaz}
+\end{figure}
+
+\subsection{Logs del Sistema}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{captura_logs.png}
+\caption{Logs del sistema mostrando información de detecciones y estado}
+\label{fig:logs}
+\end{figure}
+
+% ============================================
+% 8. SOLUCIÓN DE PROBLEMAS
+% ============================================
+\section{Solución de Problemas}
+
+\subsection{Problemas Comunes}
+
+\subsubsection{Error: "No se puede conectar a la cámara"}
+
+\textbf{Causa}: La URL de la cámara es incorrecta o la cámara no está accesible.
+
+\textbf{Solución}:
+\begin{enumerate}
+    \item Verificar que la cámara esté encendida y conectada a la red
+    \item Probar la URL en un navegador o VLC
+    \item Verificar credenciales de acceso
+    \item Revisar configuración de firewall
+\end{enumerate}
+
+\subsubsection{Error: "CUDA out of memory"}
+
+\textbf{Causa}: El modelo YOLO requiere más memoria de la disponible.
+
+\textbf{Solución}:
+\begin{enumerate}
+    \item Reducir el tamaño de imagen de entrada
+    \item Usar un modelo YOLO más pequeño
+    \item Cerrar otras aplicaciones que usen GPU
+    \item Reducir batch size
+\end{enumerate}
+
+\subsubsection{Error: "Module not found"}
+
+\textbf{Causa}: Faltan dependencias de Python.
+
+\textbf{Solución}:
+\begin{lstlisting}[language=bash]
+pip install -r requirements.txt
+\end{lstlisting}
+
+\subsubsection{Error: "Cannot connect to MySQL"}
+
+\textbf{Causa}: MySQL no está ejecutándose o las credenciales son incorrectas.
+
+\textbf{Solución}:
+\begin{enumerate}
+    \item Verificar que MySQL esté ejecutándose: \texttt{sudo systemctl status mysql}
+    \item Verificar credenciales en la configuración
+    \item Verificar que la base de datos exista
+\end{enumerate}
+
+\subsection{Comandos Útiles para Diagnóstico}
+
+\begin{lstlisting}[language=bash, caption=Comandos de diagnóstico]
+# Verificar estado de GPU
+sudo tegrastats
+
+# Verificar temperatura
+cat /sys/class/thermal/thermal_zone*/temp
+
+# Verificar memoria
+free -h
+
+# Verificar procesos Python
+ps aux | grep python
+
+# Verificar logs del sistema
+tail -f logs/lpr_system.log
+\end{lstlisting}
+
+% ============================================
+% 9. REFERENCIAS
+% ============================================
+\section{Referencias}
+
+\begin{itemize}
+    \item NVIDIA. (2024). \textit{Jetson Orin Nano Super Developer Kit}. NVIDIA Developer. Recuperado de \url{https://developer.nvidia.com/embedded/jetson-orin-nano}
+    
+    \item Ultralytics. (2024). \textit{YOLOv8 Documentation}. Ultralytics. Recuperado de \url{https://docs.ultralytics.com}
+    
+    \item JaidedAI. (2024). \textit{EasyOCR Documentation}. EasyOCR. Recuperado de \url{https://www.jaided.ai/easyocr}
+    
+    \item OpenCV. (2024). \textit{OpenCV Documentation}. OpenCV. Recuperado de \url{https://docs.opencv.org}
+    
+    \item American Psychological Association. (2020). \textit{Publication Manual of the American Psychological Association} (7th ed.). American Psychological Association.
+\end{itemize}
+
+% ============================================
+% APÉNDICES
+% ============================================
+\appendix
+
+\section{Configuración Completa del Sistema}
+
+\subsection{Archivo de Configuración Principal}
+
+El archivo de configuración principal se encuentra en \texttt{config/ptz\_config.json}. A continuación se muestra un ejemplo completo:
+
+\begin{lstlisting}[language=json, caption=Configuración completa del sistema]
+{
+  "camera": {
+    "source": "rtsp://admin:password@192.168.1.100:554/stream1",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30
+  },
+  "jetson": {
+    "ip": "192.168.1.100",
+    "interface": "enP8p1s0"
+  },
+  "realtime_optimization": {
+    "capture_target_fps": 30,
+    "display_target_fps": 30,
+    "ai_process_every": 1,
+    "motion_activation": false,
+    "display_scale": 0.5,
+    "show_yolo_boxes_immediately": true
+  },
+  "processing": {
+    "confidence_threshold": 0.35,
+    "plate_confidence_min": 0.45,
+    "detection_cooldown_sec": 0.5,
+    "bbox_cooldown_sec": 0.3,
+    "group_timeout_sec": 2.0,
+    "min_validations_for_confirmation": 1
+  },
+  "database": {
+    "enabled": true,
+    "type": "mysql",
+    "host": "localhost",
+    "port": 3306,
+    "database": "parqueadero_jetson",
+    "user": "lpr_user",
+    "password": "lpr_password"
+  }
+}
+\end{lstlisting}
+
+\section{Glosario de Términos}
+
+\begin{description}
+    \item[LPR] License Plate Recognition - Reconocimiento de Placas Vehiculares
+    \item[YOLO] You Only Look Once - Modelo de detección de objetos
+    \item[OCR] Optical Character Recognition - Reconocimiento Óptico de Caracteres
+    \item[PTZ] Pan-Tilt-Zoom - Cámara con movimiento y zoom
+    \item[ROI] Region of Interest - Región de Interés
+    \item[TOPS] Tera Operations Per Second - Operaciones por segundo
+    \item[RTSP] Real Time Streaming Protocol - Protocolo de transmisión en tiempo real
+    \item[GPU] Graphics Processing Unit - Unidad de Procesamiento Gráfico
+    \item[CUDA] Compute Unified Device Architecture - Arquitectura de computación paralela
+\end{description}
+
+\end{document}
+

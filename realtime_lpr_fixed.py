@@ -143,8 +143,8 @@ class RealtimeLPRSystem:
         # Threading tiempo real
         self.capture_queue = queue.Queue(maxsize=2)  # Buffer mínimo
         self.display_queue = queue.Queue(maxsize=2)  
-        self.ai_queue = queue.Queue(maxsize=3)       # Más buffer para IA
-        self.result_queue = queue.Queue(maxsize=10)  
+        self.ai_queue = queue.Queue(maxsize=5)       # Más buffer para IA (aumentado)
+        self.result_queue = queue.Queue(maxsize=50)  # Buffer aumentado para resultados OCR async  
         
         self.capture_thread = None
         self.display_thread = None
@@ -289,31 +289,36 @@ class RealtimeLPRSystem:
                 "aggressive_cache": True,      # Cache más agresivo
                 "headless_mode": self.headless, # Modo sin GUI
                 "skip_frame_processing": False, # No saltar frames en display
-                "show_yolo_boxes_immediately": True  # Mostrar cuadros YOLO inmediatamente
+                "show_yolo_boxes_immediately": True,  # Mostrar cuadros YOLO inmediatamente
+                "yolo_box_timeout_sec": 5.0,   # Timeout aumentado para mejor visibilidad
+                "show_yolo_without_ocr": True, # Mostrar YOLO sin esperar OCR
+                "yolo_min_confidence": 0.15    # Confianza mínima muy baja para mostrar más detecciones
             },
             "processing": {
-                "confidence_threshold": 0.35,  # Umbral reducido para más detecciones (Jetson Orin Nano)
-                "plate_confidence_min": 0.45,  # OCR reducido para más detecciones
-                "max_detections": 5,            # Aumentado para múltiples detecciones
+                "confidence_threshold": 0.15,  # Umbral MUY reducido para mostrar TODAS las detecciones posibles
+                "plate_confidence_min": 0.25,  # OCR reducido para más detecciones
+                "max_detections": 10,            # Aumentado para múltiples detecciones
                 "ocr_cache_enabled": True,
-                "detection_cooldown_sec": 0.5,  # Cooldown muy reducido para máxima fluidez
-                "bbox_cooldown_sec": 0.3,       # Cooldown muy reducido para máxima fluidez
-                "motion_cooldown_sec": 1,       # Cooldown para detección de movimiento
+                "detection_cooldown_sec": 0.05,  # Cooldown CASI CERO para detecciones instantáneas
+                "bbox_cooldown_sec": 0.02,       # Cooldown CASI CERO para máxima velocidad
+                "motion_cooldown_sec": 0.5,       # Cooldown para detección de movimiento
                 "similarity_threshold": 0.70,   # Umbral reducido para agrupar más variaciones
                 "max_plate_variations": 5,      # Más variaciones para mejor validación
-                "max_detection_distance_m": 30.0,  # Distancia máxima aumentada para máximo alcance (30 metros)
-                "min_plate_width_px": 25,        # Ancho mínimo muy reducido para detectar placas muy lejanas
-                "min_plate_height_px": 10,       # Altura mínima muy reducida para detectar placas muy lejanas
-                "distance_filter_enabled": True,  # Habilitar filtro de distancia pero con rango amplio
-                "detection_display_timeout_sec": 10.0,  # Tiempo reducido para mejor rendimiento
+                "max_detection_distance_m": 50.0,  # Distancia máxima MUY aumentada (50 metros)
+                "min_plate_width_px": 10,        # Ancho mínimo MUY reducido para detectar placas muy lejanas
+                "min_plate_height_px": 5,        # Altura mínima MUY reducida para detectar placas muy lejanas
+                "distance_filter_enabled": False,  # DESHABILITAR filtro de distancia para máximo alcance
+                "detection_display_timeout_sec": 15.0,  # Tiempo aumentado para mejor visualización
                 "enhanced_detection_enabled": False,   # Deshabilitado - mostrar detecciones inmediatamente
                 "colombian_plate_optimization": True,  # Optimización específica para placas colombianas
                 "color_detection_enabled": False,      # Deshabilitar filtro de color (más permisivo)
                 "preprocess_aggressive": False,        # Preprocesamiento menos agresivo para velocidad
-                "min_roi_width_for_ocr": 50,          # Ancho mínimo de ROI para OCR (reducido para mayor alcance)
-                "min_roi_height_for_ocr": 15,         # Altura mínima de ROI para OCR (reducido para mayor alcance)
+                "min_roi_width_for_ocr": 30,          # Ancho mínimo de ROI para OCR (MUY reducido)
+                "min_roi_height_for_ocr": 10,         # Altura mínima de ROI para OCR (MUY reducido)
                 "multiple_detection_validation": True,  # Validación mejorada para múltiples detecciones
-                "min_validations_for_confirmation": 1   # Mínimo de validaciones (1 para detección rápida)
+                "min_validations_for_confirmation": 1,   # Mínimo de validaciones (1 para detección rápida)
+                "process_ocr_async": True,              # Procesar OCR en paralelo sin bloquear
+                "show_low_confidence_detections": True   # Mostrar detecciones de baja confianza
             },
             "database": {
                 "enabled": True,
@@ -706,7 +711,7 @@ class RealtimeLPRSystem:
         try:
             while self.running:
                 try:
-                    frame = self.ai_queue.get(timeout=0.5)  # Timeout más corto
+                    frame = self.ai_queue.get(timeout=0.1)  # Timeout muy corto para máxima velocidad
                     
                     # Timestamp de cuando se recibió el frame
                     frame_received_time = time.time()
@@ -717,15 +722,84 @@ class RealtimeLPRSystem:
                         self.result_queue.put(detections)
                         self.recent_detections.extend(detections)
                         
-                        # Mantener solo últimas 3 detecciones para display
-                        if len(self.recent_detections) > 3:
-                            self.recent_detections = self.recent_detections[-3:]
+                        # Mantener más detecciones para mejor visualización
+                        if len(self.recent_detections) > 10:
+                            self.recent_detections = self.recent_detections[-10:]
+                    
+                    # Procesar resultados de OCR async si hay (sin bloquear)
+                    try:
+                        while True:
+                            ocr_result = self.result_queue.get_nowait()
+                            self.process_ocr_result(ocr_result)
+                    except queue.Empty:
+                        pass
                     
                 except queue.Empty:
                     continue
                     
         except Exception as e:
             self.logger.error(f"[ERROR] Error en IA: {e}")
+    
+    def process_ocr_result(self, ocr_result):
+        """Procesar resultado de OCR asíncrono"""
+        try:
+            bbox = ocr_result['bbox']
+            plate_texts = ocr_result['plate_texts']
+            yolo_confidence = ocr_result['yolo_confidence']
+            timestamp = ocr_result['timestamp']
+            frame = ocr_result.get('frame')
+            
+            x1, y1, x2, y2 = bbox
+            current_time = datetime.now()
+            current_time_float = time.time()
+            
+            for plate_text in plate_texts:
+                text = plate_text['text']
+                ocr_conf = plate_text['confidence']
+                
+                # Validar formato de placa
+                if not is_valid_license_plate(text):
+                    continue
+                
+                # Validación adicional: rechazar placas con confianza OCR muy baja
+                ocr_min_threshold = self.config["processing"]["plate_confidence_min"]
+                if ocr_conf < ocr_min_threshold:
+                    continue
+                
+                # Crear detección
+                detection = {
+                    'timestamp': current_time.isoformat(),
+                    'frame_number': self.capture_frame_count,
+                    'ai_frame_number': self.ai_processed_frames,
+                    'plate_text': text,
+                    'yolo_confidence': yolo_confidence,
+                    'ocr_confidence': ocr_conf,
+                    'bbox': [x1, y1, x2, y2],
+                    'estimated_distance_m': self.estimate_distance_from_bbox([x1, y1, x2, y2], frame.shape[1] if frame is not None else 1920, frame.shape[0] if frame is not None else 1080),
+                    'valid': True,
+                    'frame': frame.copy() if frame is not None else None,
+                    'status': 'possible',
+                    'saved_to_db': False
+                }
+                
+                # Agregar a display inmediatamente
+                display_detection = detection.copy()
+                display_detection['display_time'] = current_time_float
+                self.display_detections.append(display_detection)
+                self.active_detections.append(display_detection)
+                
+                # Mantener límite
+                if len(self.display_detections) > 20:
+                    self.display_detections = self.display_detections[-20:]
+                if len(self.active_detections) > 20:
+                    self.active_detections = self.active_detections[-20:]
+                
+                # Finalizar si confianza es alta
+                if ocr_conf >= 0.50:
+                    self.finalize_detection(detection, frame if frame is not None else self.last_frame, current_time)
+                    
+        except Exception as e:
+            self.logger.debug(f"[OCR] Error procesando resultado OCR: {e}")
     
     def realtime_overlay(self, frame):
         """Overlay mínimo para tiempo real"""
@@ -755,12 +829,12 @@ class RealtimeLPRSystem:
                 cv2.putText(display_frame, "TIEMPO REAL", (5, new_h - 10), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
                 
-                # Limpiar detecciones expiradas (aumentado a 10 segundos para mejor visualización)
+                # Limpiar detecciones expiradas (aumentado para mejor visualización)
                 current_time_float = time.time()
-                timeout_sec = self.config["processing"].get("detection_display_timeout_sec", 10.0)
-                yolo_timeout_sec = 3.0  # Timeout para cuadros YOLO (3 segundos para mejor visibilidad)
+                timeout_sec = self.config["processing"].get("detection_display_timeout_sec", 15.0)
+                yolo_timeout_sec = self.config["realtime_optimization"].get("yolo_box_timeout_sec", 5.0)  # Timeout aumentado
                 
-                # MOSTRAR CUADROS YOLO INMEDIATAMENTE (antes de OCR)
+                # MOSTRAR CUADROS YOLO INMEDIATAMENTE (ANTES DE CUALQUIER FILTRO)
                 if self.config["realtime_optimization"].get("show_yolo_boxes_immediately", True):
                     with self.yolo_boxes_lock:
                         # Limpiar cuadros YOLO expirados
@@ -770,22 +844,32 @@ class RealtimeLPRSystem:
                         ]
                         self.yolo_boxes = valid_yolo_boxes
                         
-                        # Dibujar cuadros YOLO inmediatamente (azul cian para diferenciarlos)
+                        # Dibujar cuadros YOLO inmediatamente con colores según confianza
                         for yolo_box in valid_yolo_boxes:
                             bbox = yolo_box['bbox']
                             conf = yolo_box['confidence']
                             x1, y1, x2, y2 = [int(coord * scale) for coord in bbox]
                             
-                            # Color azul cian para cuadros YOLO (antes de OCR)
-                            yolo_color = (255, 255, 0)  # Cian en BGR
+                            # Color según confianza YOLO (más visible)
+                            if conf >= 0.50:
+                                yolo_color = (0, 255, 255)  # Cian brillante - alta confianza
+                                thickness = 3
+                            elif conf >= 0.30:
+                                yolo_color = (255, 255, 0)  # Cian - confianza media
+                                thickness = 2
+                            else:
+                                yolo_color = (255, 200, 0)  # Cian oscuro - baja confianza pero visible
+                                thickness = 2
                             
-                            # Dibujar rectángulo YOLO (línea delgada)
-                            cv2.rectangle(display_frame, (x1, y1), (x2, y2), yolo_color, 1)
+                            # Dibujar rectángulo YOLO (más grueso para mejor visibilidad)
+                            cv2.rectangle(display_frame, (x1, y1), (x2, y2), yolo_color, thickness)
                             
-                            # Mostrar confianza YOLO
+                            # Mostrar confianza YOLO con fondo para mejor legibilidad
                             conf_text = f"YOLO: {conf:.2f}"
-                            cv2.putText(display_frame, conf_text, (x1, y1-5), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, yolo_color, 1)
+                            (text_width, text_height), baseline = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                            cv2.rectangle(display_frame, (x1, y1-text_height-8), (x1+text_width+4, y1+2), (0, 0, 0), -1)
+                            cv2.putText(display_frame, conf_text, (x1+2, y1-4), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, yolo_color, 1)
                 
                 # Combinar display_detections y active_detections
                 all_detections = list(self.display_detections) + list(self.active_detections)
@@ -836,7 +920,7 @@ class RealtimeLPRSystem:
                         status_text = "PROCESANDO"
                     
                     # Dibujar rectángulo con color según estado (línea más gruesa para mejor visibilidad)
-                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 3)  # Más grueso
                     
                     # Texto de la placa (más grande y visible)
                     plate_text = detection['plate_text']
@@ -1293,50 +1377,58 @@ class RealtimeLPRSystem:
                         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                         confidence = float(box.conf[0].cpu().numpy())
                         
-                        # Umbral de confianza aumentado para evitar falsos positivos
-                        min_yolo_conf = self.config["processing"]["confidence_threshold"]
-                        if confidence < min_yolo_conf:
-                            continue
-                        
                         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
                         x1, y1 = max(0, x1), max(0, y1)
                         x2 = min(frame.shape[1], x2)
                         y2 = min(frame.shape[0], y2)
                         
                         if x2 > x1 and y2 > y1:
-                            # MOSTRAR CUADRO YOLO INMEDIATAMENTE (antes de OCR)
-                            if self.config["realtime_optimization"].get("show_yolo_boxes_immediately", True):
-                                with self.yolo_boxes_lock:
-                                    # Agregar cuadro YOLO para mostrar inmediatamente
-                                    yolo_box = {
-                                        'bbox': [x1, y1, x2, y2],
-                                        'confidence': confidence,
-                                        'display_time': current_time_float
-                                    }
-                                    self.yolo_boxes.append(yolo_box)
-                                    # Mantener solo últimas 10 detecciones YOLO
-                                    if len(self.yolo_boxes) > 10:
-                                        self.yolo_boxes = self.yolo_boxes[-10:]
+                            # MOSTRAR CUADRO YOLO INMEDIATAMENTE (SIN ESPERAR FILTROS)
+                            # Esto se hace ANTES de cualquier filtro para máxima velocidad
+                            # Usar umbral mínimo muy bajo para mostrar TODAS las detecciones posibles
+                            min_yolo_conf_display = self.config["realtime_optimization"].get("yolo_min_confidence", 0.15)
+                            if confidence >= min_yolo_conf_display:
+                                if self.config["realtime_optimization"].get("show_yolo_boxes_immediately", True):
+                                    with self.yolo_boxes_lock:
+                                        # Agregar cuadro YOLO para mostrar inmediatamente
+                                        yolo_box = {
+                                            'bbox': [x1, y1, x2, y2],
+                                            'confidence': confidence,
+                                            'display_time': current_time_float
+                                        }
+                                        self.yolo_boxes.append(yolo_box)
+                                        # Mantener más detecciones YOLO para mejor visualización
+                                        if len(self.yolo_boxes) > 30:
+                                            self.yolo_boxes = self.yolo_boxes[-30:]
                             
-                            # Filtrar por distancia/rango de detección
+                            # Filtrar por distancia/rango de detección (DESHABILITADO para máximo alcance)
                             frame_height, frame_width = frame.shape[:2]
-                            is_within_range, estimated_distance = self.is_within_detection_range(
-                                [x1, y1, x2, y2], frame_width, frame_height
-                            )
+                            distance_filter_enabled = self.config["processing"].get("distance_filter_enabled", False)
                             
-                            if not is_within_range:
-                                self.logger.debug(f"[FILTER] Placa rechazada por distancia: {estimated_distance:.1f}m "
-                                                 f"(máximo: {self.config['processing'].get('max_detection_distance_m', 5.0)}m)")
-                                continue  # Fuera del rango permitido
+                            if distance_filter_enabled:
+                                is_within_range, estimated_distance = self.is_within_detection_range(
+                                    [x1, y1, x2, y2], frame_width, frame_height
+                                )
+                                
+                                if not is_within_range:
+                                    self.logger.debug(f"[FILTER] Placa rechazada por distancia: {estimated_distance:.1f}m")
+                                    continue  # Fuera del rango permitido
+                                estimated_distance = self.estimate_distance_from_bbox([x1, y1, x2, y2], frame_width, frame_height)
+                            else:
+                                # Si el filtro está deshabilitado, estimar distancia pero no filtrar
+                                estimated_distance = self.estimate_distance_from_bbox([x1, y1, x2, y2], frame_width, frame_height)
                             
-                            # Cooldown por ubicación (bbox)
+                            # Cooldown por ubicación (bbox) - CASI DESHABILITADO para velocidad
                             bbox_hash = self.calculate_bbox_hash(x1, y1, x2, y2)
                             bbox_cooldown_sec = self.config["processing"]["bbox_cooldown_sec"]
                             
-                            if bbox_hash in self.bbox_cooldown:
-                                last_bbox_time = self.bbox_cooldown[bbox_hash]
-                                if (current_time_float - last_bbox_time) < bbox_cooldown_sec:
-                                    continue  # Esta ubicación fue detectada recientemente
+                            # Solo aplicar cooldown si es muy reciente (casi deshabilitado)
+                            if bbox_cooldown_sec > 0.01:  # Solo si el cooldown es significativo
+                                if bbox_hash in self.bbox_cooldown:
+                                    last_bbox_time = self.bbox_cooldown[bbox_hash]
+                                    if (current_time_float - last_bbox_time) < bbox_cooldown_sec:
+                                        # Continuar con OCR pero no bloquear visualización YOLO
+                                        pass  # Ya mostramos el cuadro YOLO, continuar con OCR
                             
                             roi = frame[y1:y2, x1:x2]
                             
@@ -1346,7 +1438,35 @@ class RealtimeLPRSystem:
                             #     self.logger.debug(f"[FILTER] Placa rechazada por color: no coincide con placas colombianas")
                             #     continue  # No es una placa colombiana típica
                             
-                            # OCR con cache
+                            # OCR con cache (procesar en paralelo si está habilitado)
+                            process_ocr_async = self.config["processing"].get("process_ocr_async", True)
+                            
+                            if process_ocr_async:
+                                # Procesar OCR sin bloquear - mostrar YOLO inmediatamente
+                                # El OCR se procesa en segundo plano
+                                def process_ocr_async_func():
+                                    try:
+                                        plate_texts = self.get_plate_text_cached_realtime(roi)
+                                        if plate_texts:
+                                            # Agregar a cola de resultados para procesar después
+                                            self.result_queue.put({
+                                                'bbox': [x1, y1, x2, y2],
+                                                'roi': roi,
+                                                'plate_texts': plate_texts,
+                                                'yolo_confidence': confidence,
+                                                'timestamp': current_time_float,
+                                                'frame': frame.copy()
+                                            })
+                                    except Exception as e:
+                                        self.logger.debug(f"[OCR] Error en OCR async: {e}")
+                                
+                                # Ejecutar OCR en thread separado
+                                threading.Thread(target=process_ocr_async_func, daemon=True).start()
+                                
+                                # Continuar sin esperar OCR - el cuadro YOLO ya se mostró
+                                continue
+                            
+                            # OCR síncrono (si async está deshabilitado)
                             plate_texts = self.get_plate_text_cached_realtime(roi)
                             
                             for plate_text in plate_texts:
@@ -1400,14 +1520,16 @@ class RealtimeLPRSystem:
                                         self.logger.debug(f"[FILTER] Usando detección previa más confiable: {better_text}")
                                         continue  # Ignorar esta detección, usar la anterior
                                 
-                                # Cooldown por texto de placa - REDUCIDO para detección más frecuente
+                                # Cooldown por texto de placa - CASI DESHABILITADO para detección instantánea
                                 cooldown_sec = self.config["processing"]["detection_cooldown_sec"]
-                                if text in self.detection_cooldown:
-                                    last_time = self.detection_cooldown[text]
-                                    # Solo aplicar cooldown si la placa es exactamente igual (evitar duplicados exactos)
-                                    if (current_time_float - last_time) < cooldown_sec:
-                                        # Permitir si es una variación diferente (ej: LCP909 vs ILCP9091)
-                                        continue  # Esta placa fue detectada recientemente
+                                # Solo aplicar cooldown si es significativo (más de 0.05 segundos)
+                                if cooldown_sec > 0.05:
+                                    if text in self.detection_cooldown:
+                                        last_time = self.detection_cooldown[text]
+                                        # Solo aplicar cooldown si la placa es exactamente igual
+                                        if (current_time_float - last_time) < cooldown_sec:
+                                            # Permitir si es una variación diferente
+                                            continue  # Esta placa fue detectada recientemente
                                 
                                 # Actualizar cooldowns
                                 self.detection_cooldown[text] = current_time_float
